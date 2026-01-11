@@ -84,7 +84,19 @@ async def handle_questionnaire_answer(message: Message, state: FSMContext):
                         await message.answer(error)
                         return
                     answer = int(value)
+                elif question["type"] == "scale_1_5":
+                    is_valid, value, error = parse_number(text)
+                    if not is_valid:
+                        await message.answer("Введите число от 1 до 5")
+                        return
+                    from utils.validators import validate_scale_1_5
+                    is_valid, error = validate_scale_1_5(int(value))
+                    if not is_valid:
+                        await message.answer(error)
+                        return
+                    answer = int(value)
                 elif question["type"] == "scale_0_5":
+                    # Старая версия для совместимости
                     is_valid, value, error = parse_number(text)
                     if not is_valid:
                         await message.answer("Введите число от 0 до 5")

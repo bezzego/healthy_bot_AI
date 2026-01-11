@@ -24,8 +24,13 @@ def validate_scale_value(value: int, min_val: int = 0, max_val: int = 10) -> Tup
 
 
 def validate_scale_0_5(value: int) -> Tuple[bool, Optional[str]]:
-    """Валидация значения по шкале 0-5"""
+    """Валидация значения по шкале 0-5 (устарело, используйте validate_scale_1_5)"""
     return validate_scale_value(value, 0, 5)
+
+
+def validate_scale_1_5(value: int) -> Tuple[bool, Optional[str]]:
+    """Валидация значения по шкале 1-5"""
+    return validate_scale_value(value, 1, 5)
 
 
 def validate_steps(steps: int) -> Tuple[bool, Optional[str]]:

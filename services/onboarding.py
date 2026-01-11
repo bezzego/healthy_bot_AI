@@ -34,7 +34,7 @@ QUESTIONNAIRE_FLOW = [
     # Менструальный цикл (только для женщин)
     "menstrual_cycle",
     
-    # Самочувствие (шкала 0-5)
+    # Самочувствие (шкала 1-5)
     "energy_level",
     "stress_level",
     "sleep_quality",
@@ -181,7 +181,7 @@ def get_question_type(question_key: str) -> str:
                        "hips_circumference", "average_steps"]:
         return "number"
     elif question_key in ["energy_level", "stress_level", "sleep_quality"]:
-        return "scale_0_5"  # Изменено с 0-10 на 0-5
+        return "scale_1_5"  # Шкала 1-5
     elif question_key in QUESTION_OPTIONS:
         return "choice"
     elif question_key in ["concentration", "irritability", "sleepiness", "sugar_craving", 
@@ -374,17 +374,18 @@ def calculate_health_score_new(answers: Dict[str, Any]) -> float:
     """Рассчитать балл здоровья по новой системе (0-10)"""
     score = 10.0
     
-    # Энергия (макс -2 балла)
-    energy_level = answers.get("energy_level", 2.5)
+    # Энергия (макс -2 балла) - шкала 1-5, среднее значение 3
+    energy_level = answers.get("energy_level", 3)
     score -= (5 - energy_level) * 0.4
     
-    # Сон (макс -2 балла)
-    sleep_quality = answers.get("sleep_quality", 2.5)
+    # Сон (макс -2 балла) - шкала 1-5, среднее значение 3
+    sleep_quality = answers.get("sleep_quality", 3)
     score -= (5 - sleep_quality) * 0.4
     
-    # Стресс (макс -2 балла)
-    stress_level = answers.get("stress_level", 2.5)
-    score -= stress_level * 0.4
+    # Стресс (макс -2 балла) - шкала 1-5, низкий стресс = высокое значение
+    stress_level = answers.get("stress_level", 3)
+    # Инвертируем: высокий стресс (1) = плохо, низкий стресс (5) = хорошо
+    score -= (5 - stress_level) * 0.4
     
     # Симптомы (каждый -0.5 балла, макс -4 балла)
     symptoms = [
@@ -401,17 +402,18 @@ def calculate_general_score(answers: Dict[str, Any]) -> float:
     """Рассчитать общий балл (0-100)"""
     score = 100.0
     
-    # Энергия (0-5) -> до 20 баллов
-    energy = answers.get("energy_level", 0)
+    # Энергия (1-5) -> до 20 баллов, среднее значение 3
+    energy = answers.get("energy_level", 3)
     score -= (5 - energy) * 4
     
-    # Сон (0-5) -> до 20 баллов
-    sleep = answers.get("sleep_quality", 0)
+    # Сон (1-5) -> до 20 баллов, среднее значение 3
+    sleep = answers.get("sleep_quality", 3)
     score -= (5 - sleep) * 4
     
-    # Стресс (0-5) -> до 20 баллов
-    stress = answers.get("stress_level", 0)
-    score -= stress * 4
+    # Стресс (1-5) -> до 20 баллов, низкий стресс = высокое значение, среднее 3
+    stress = answers.get("stress_level", 3)
+    # Инвертируем: высокий стресс (1) = плохо, низкий стресс (5) = хорошо
+    score -= (5 - stress) * 4
     
     # Симптомы -> до 40 баллов
     all_symptoms = [
@@ -434,14 +436,15 @@ def get_attention_zones(answers: Dict[str, Any], health_score: float) -> str:
     gender = answers.get("gender", "female")  # Определяем пол пользователя
     is_female = (gender == "female" or gender == "женский")
     
-    # Самочувствие (шкала 0-5)
+    # Самочувствие (шкала 1-5)
     if answers.get("energy_level", 5) < 3:
         zones.append("Низкий уровень энергии")
     
     if answers.get("sleep_quality", 5) < 3:
         zones.append("Проблемы со сном")
     
-    if answers.get("stress_level", 0) > 3:
+    # Стресс: 1 = много стресса, 5 = мало стресса, порог = 3
+    if answers.get("stress_level", 5) < 3:
         zones.append("Высокий уровень стресса")
     
     if answers.get("concentration") is True:

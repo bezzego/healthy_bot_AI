@@ -312,8 +312,21 @@ async def send_question(message: Message, question: dict, state: FSMContext = No
         if is_optional:
             keyboard.append([InlineKeyboardButton(text="⏭️ Пропустить", callback_data="answer_skip")])
         reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+    elif question_type == "scale_1_5":
+        # Шкала 1-5
+        row = []
+        for i in range(1, 6):
+            row.append(InlineKeyboardButton(text=str(i), callback_data=f"answer_{i}"))
+            if len(row) == 3:
+                keyboard.append(row)
+                row = []
+        if row:
+            keyboard.append(row)
+        if is_optional:
+            keyboard.append([InlineKeyboardButton(text="⏭️ Пропустить", callback_data="answer_skip")])
+        reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
     elif question_type == "scale_0_5":
-        # Шкала 0-5 (новая)
+        # Старая шкала 0-5 (для совместимости)
         row = []
         for i in range(0, 6):
             row.append(InlineKeyboardButton(text=str(i), callback_data=f"answer_{i}"))

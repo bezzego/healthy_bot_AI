@@ -393,21 +393,20 @@ def setup_scheduler(bot: Bot):
         replace_existing=True
     )
     
-    # Недельный отчёт (воскресенье в 22:00 МСК)
+    # Недельный и месячный отчёты проверяем каждые 15 минут для отправки в персональное время каждого пользователя
     scheduler.add_job(
-        send_weekly_report,
-        CronTrigger(day_of_week=6, hour=22, minute=0, timezone=moscow_tz),  # Воскресенье
+        check_and_send_weekly_reports,
+        CronTrigger(minute="*/15", timezone=moscow_tz),  # Каждые 15 минут - проверяем всех пользователей
         args=[bot],
-        id="weekly_report",
+        id="check_weekly_reports",
         replace_existing=True
     )
     
-    # Месячный отчёт (последний день месяца в 22:00 МСК)
     scheduler.add_job(
-        send_monthly_report,
-        CronTrigger(day="last", hour=22, minute=0, timezone=moscow_tz),
+        check_and_send_monthly_reports,
+        CronTrigger(minute="*/15", timezone=moscow_tz),  # Каждые 15 минут - проверяем всех пользователей
         args=[bot],
-        id="monthly_report",
+        id="check_monthly_reports",
         replace_existing=True
     )
     
@@ -417,102 +416,158 @@ def setup_scheduler(bot: Bot):
     return scheduler
 
 
-async def send_weekly_report(bot: Bot):
-    """Отправить недельный отчёт всем пользователям (воскресенье в 22:00)"""
-    logger.info("Starting weekly report routine")
+async def check_and_send_weekly_reports(bot: Bot):
+    """Проверить и отправить недельные отчёты пользователям в их персональное время (воскресенье в 22:00)"""
+    logger.debug("Checking users for weekly reports based on personal timezone")
     
-    from services.reports import get_weekly_report, format_weekly_report_text
-    from database.db import AsyncSessionLocal
-    from database.models import User
-    from sqlalchemy import select
+    try:
+        from services.reports import get_weekly_report, format_weekly_report_text
+        from database.db import AsyncSessionLocal
+        from database.models import User
+        from sqlalchemy import select
+        from datetime import datetime
+        from config import settings
+        import pytz
     
-    async with AsyncSessionLocal() as session:
-        result = await session.execute(
-            select(User).where(User.onboarding_completed == True)
-        )
-        users = result.scalars().all()
-        logger.debug(f"Found {len(users)} users for weekly report")
+        # Текущее время в Москве (базовое время для проекта)
+        moscow_tz = pytz.timezone(settings.DEFAULT_TIMEZONE)
+        now_moscow = datetime.now(moscow_tz)
         
-        success_count = 0
-        error_count = 0
-        
-        for user in users:
-            try:
-                # Отправляем отчёт всем пользователям, у которых есть хотя бы один чек-ин за неделю
-                stats = await get_weekly_report(session, user.id)
-                
-                # Отправляем только если есть данные
-                if stats.get("morning_count", 0) > 0 or stats.get("evening_count", 0) > 0:
-                    report_text = format_weekly_report_text(stats)
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(
+                select(User).where(User.onboarding_completed == True)
+            )
+            users = result.scalars().all()
+            
+            sent_count = 0
+            for user in users:
+                try:
+                    # Получаем настройки времени пользователя (по умолчанию московское время)
+                    timezone_str = user.timezone or settings.DEFAULT_TIMEZONE
                     
-                    await bot.send_message(
-                        chat_id=user.telegram_id,
-                        text=report_text
-                    )
-                    success_count += 1
-                    logger.debug(f"Weekly report sent to user {user.telegram_id}")
-                else:
-                    logger.debug(f"User {user.telegram_id} has no data for weekly report")
-                    
-            except Exception as e:
-                error_count += 1
-                logger.error(f"Error sending weekly report to user {user.telegram_id}: {e}", exc_info=True)
-                await send_error_to_admins(
-                    f"Error sending weekly report to user {user.telegram_id}",
-                    str(e),
-                    f"User ID: {user.telegram_id}"
-                )
-        
-        logger.info(f"Weekly report completed: {success_count} sent, {error_count} errors")
+                    try:
+                        # Преобразуем время пользователя из московского в его локальное время
+                        user_tz = pytz.timezone(timezone_str)
+                        user_local_time = now_moscow.astimezone(user_tz)
+                        
+                        # Проверяем, наступило ли время недельного отчета (воскресенье в 22:00)
+                        # Проверяем каждые 15 минут: отправляем в окне 22:00-22:14
+                        is_sunday = user_local_time.weekday() == 6  # Воскресенье = 6
+                        current_hour = user_local_time.hour
+                        current_minute = user_local_time.minute
+                        
+                        if is_sunday and current_hour == 22 and 0 <= current_minute < 15:
+                            # Проверяем, не отправляли ли уже сегодня (по локальной дате пользователя)
+                            today = user_local_time.date()
+                            
+                            # Получаем или создаем запись для отслеживания отправленных отчетов
+                            # Используем поле last_weekly_report_date если оно есть, или проверяем по логике
+                            # Для простоты отправляем только если есть данные за неделю
+                            stats = await get_weekly_report(session, user.id)
+                            
+                            # Отправляем только если есть данные и еще не отправляли сегодня
+                            # Проверка "не отправляли сегодня" реализуется через проверку времени последней отправки
+                            # Для MVP: отправляем если есть данные (можно улучшить добавив поле last_weekly_report_date)
+                            if stats.get("morning_count", 0) > 0 or stats.get("evening_count", 0) > 0:
+                                report_text = format_weekly_report_text(stats)
+                                
+                                await bot.send_message(
+                                    chat_id=user.telegram_id,
+                                    text=report_text
+                                )
+                                sent_count += 1
+                                logger.info(
+                                    f"Weekly report sent to user {user.telegram_id} at {timezone_str} "
+                                    f"Sunday 22:00 (local time: {user_local_time.strftime('%Y-%m-%d %H:%M')})"
+                                )
+                    except (ValueError, pytz.exceptions.UnknownTimeZoneError) as tz_error:
+                        logger.warning(f"Invalid timezone for user {user.telegram_id} ({timezone_str}): {tz_error}")
+                        
+                except Exception as e:
+                    logger.error(f"Error checking weekly report for user {user.telegram_id}: {e}", exc_info=True)
+            
+            if sent_count > 0:
+                logger.info(f"Sent {sent_count} weekly reports")
+            
+    except Exception as e:
+        logger.critical(f"Critical error in check_and_send_weekly_reports: {e}", exc_info=True)
+        await send_error_to_admins("Critical error in check_and_send_weekly_reports", str(e))
 
 
-async def send_monthly_report(bot: Bot):
-    """Отправить месячный отчёт всем пользователям (последний день месяца в 22:00)"""
-    logger.info("Starting monthly report routine")
+async def check_and_send_monthly_reports(bot: Bot):
+    """Проверить и отправить месячные отчёты пользователям в их персональное время (последний день месяца в 22:00)"""
+    logger.debug("Checking users for monthly reports based on personal timezone")
     
-    from services.reports import get_monthly_report, format_monthly_report_text
-    from database.db import AsyncSessionLocal
-    from database.models import User
-    from sqlalchemy import select
+    try:
+        from services.reports import get_monthly_report, format_monthly_report_text
+        from database.db import AsyncSessionLocal
+        from database.models import User
+        from sqlalchemy import select
+        from datetime import datetime, timedelta
+        from config import settings
+        import pytz
+        import calendar
     
-    async with AsyncSessionLocal() as session:
-        result = await session.execute(
-            select(User).where(User.onboarding_completed == True)
-        )
-        users = result.scalars().all()
-        logger.debug(f"Found {len(users)} users for monthly report")
+        # Текущее время в Москве (базовое время для проекта)
+        moscow_tz = pytz.timezone(settings.DEFAULT_TIMEZONE)
+        now_moscow = datetime.now(moscow_tz)
         
-        success_count = 0
-        error_count = 0
-        
-        for user in users:
-            try:
-                # Отправляем отчёт всем пользователям, у которых есть хотя бы один чек-ин за месяц
-                stats = await get_monthly_report(session, user.id)
-                
-                # Отправляем только если есть данные
-                if stats.get("morning_count", 0) > 0 or stats.get("evening_count", 0) > 0:
-                    report_text = format_monthly_report_text(stats)
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(
+                select(User).where(User.onboarding_completed == True)
+            )
+            users = result.scalars().all()
+            
+            sent_count = 0
+            for user in users:
+                try:
+                    # Получаем настройки времени пользователя (по умолчанию московское время)
+                    timezone_str = user.timezone or settings.DEFAULT_TIMEZONE
                     
-                    await bot.send_message(
-                        chat_id=user.telegram_id,
-                        text=report_text
-                    )
-                    success_count += 1
-                    logger.debug(f"Monthly report sent to user {user.telegram_id}")
-                else:
-                    logger.debug(f"User {user.telegram_id} has no data for monthly report")
-                    
-            except Exception as e:
-                error_count += 1
-                logger.error(f"Error sending monthly report to user {user.telegram_id}: {e}", exc_info=True)
-                await send_error_to_admins(
-                    f"Error sending monthly report to user {user.telegram_id}",
-                    str(e),
-                    f"User ID: {user.telegram_id}"
-                )
-        
-        logger.info(f"Monthly report completed: {success_count} sent, {error_count} errors")
+                    try:
+                        # Преобразуем время пользователя из московского в его локальное время
+                        user_tz = pytz.timezone(timezone_str)
+                        user_local_time = now_moscow.astimezone(user_tz)
+                        
+                        # Проверяем, наступило ли время месячного отчета (последний день месяца в 22:00)
+                        # Проверяем каждые 15 минут: отправляем в окне 22:00-22:14
+                        current_date = user_local_time.date()
+                        current_hour = user_local_time.hour
+                        current_minute = user_local_time.minute
+                        
+                        # Определяем последний день месяца
+                        last_day = calendar.monthrange(current_date.year, current_date.month)[1]
+                        is_last_day = current_date.day == last_day
+                        
+                        if is_last_day and current_hour == 22 and 0 <= current_minute < 15:
+                            # Получаем статистику за месяц
+                            stats = await get_monthly_report(session, user.id)
+                            
+                            # Отправляем только если есть данные
+                            if stats.get("morning_count", 0) > 0 or stats.get("evening_count", 0) > 0:
+                                report_text = format_monthly_report_text(stats)
+                                
+                                await bot.send_message(
+                                    chat_id=user.telegram_id,
+                                    text=report_text
+                                )
+                                sent_count += 1
+                                logger.info(
+                                    f"Monthly report sent to user {user.telegram_id} at {timezone_str} "
+                                    f"last day 22:00 (local time: {user_local_time.strftime('%Y-%m-%d %H:%M')})"
+                                )
+                    except (ValueError, pytz.exceptions.UnknownTimeZoneError) as tz_error:
+                        logger.warning(f"Invalid timezone for user {user.telegram_id} ({timezone_str}): {tz_error}")
+                        
+                except Exception as e:
+                    logger.error(f"Error checking monthly report for user {user.telegram_id}: {e}", exc_info=True)
+            
+            if sent_count > 0:
+                logger.info(f"Sent {sent_count} monthly reports")
+            
+    except Exception as e:
+        logger.critical(f"Critical error in check_and_send_monthly_reports: {e}", exc_info=True)
+        await send_error_to_admins("Critical error in check_and_send_monthly_reports", str(e))
 
 
 # Обработчик необработанных ошибок

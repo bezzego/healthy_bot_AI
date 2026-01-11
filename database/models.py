@@ -83,10 +83,10 @@ class Questionnaire(Base):
     joint_pain = Column(Boolean, nullable=True)  # Боли в суставах
     abdominal_cramps = Column(Boolean, nullable=True)  # Боли или спазмы в животе
     
-    # Самочувствие (шкала 0-5)
-    energy_level = Column(Integer, nullable=True)  # 0-5
-    stress_level = Column(Integer, nullable=True)  # 0-5
-    sleep_quality = Column(Integer, nullable=True)  # 0-5
+    # Самочувствие (шкала 1-5)
+    energy_level = Column(Integer, nullable=True)  # 1-5
+    stress_level = Column(Integer, nullable=True)  # 1-5
+    sleep_quality = Column(Integer, nullable=True)  # 1-5
     concentration = Column(Boolean, nullable=True)  # снижение концентрации
     irritability = Column(Boolean, nullable=True)  # дневная раздражительность
     sleepiness = Column(Boolean, nullable=True)  # дневная сонливость
