@@ -14,7 +14,7 @@ from utils.templates import format_statistics
 from utils.logger import setup_logger
 from config import settings
 from handlers.commands import send_question
-from handlers.fsm_states import OnboardingStates, RetestStates, AddingFoodStates, AdminRequestStates
+from handlers.fsm_states import OnboardingStates, RetestStates, AddingFoodStates
 from aiogram.fsm.context import FSMContext
 import json
 
@@ -388,33 +388,6 @@ async def handle_retest(callback: CallbackQuery, state: FSMContext):
                 await send_question_message(callback, result["current_question"], state)
 
 
-@router.callback_query(F.data.startswith("admin_request_"))
-async def handle_admin_request_start(callback: CallbackQuery, state: FSMContext):
-    """Начать обращение к администратору"""
-    await callback.answer()
-    
-    request_type = callback.data.replace("admin_request_", "")
-    
-    type_names = {
-        "contact": "общее обращение",
-        "complaint": "жалобу",
-        "recipe": "рецепт",
-        "results": "результаты"
-    }
-    
-    if request_type == "recipe":
-        await state.set_state(AdminRequestStates.waiting_for_recipe_composition)
-    elif request_type == "results":
-        await state.set_state(AdminRequestStates.waiting_for_results_data)
-    else:
-        await state.set_state(AdminRequestStates.waiting_for_message)
-        await state.update_data(type=request_type)
-    
-    await callback.message.edit_text(
-        f"📝 Отправьте текст для {type_names.get(request_type, 'обращения')}:\n\n"
-        "Для рецепта укажите состав и описание.\n"
-        "Для результатов отправьте фото до/после и данные."
-    )
 
 
 @router.callback_query(F.data == "menu_back")

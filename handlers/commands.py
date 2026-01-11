@@ -250,16 +250,14 @@ async def report_command(message: Message):
 
 @router.message(Command("contact_admin"))
 async def contact_admin_command(message: Message):
-    """Обработчик команды /contact_admin"""
+    """Обработчик команды /contact_admin - просто ссылка на аккаунт"""
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💬 Общее обращение", callback_data="admin_request_contact")],
-        [InlineKeyboardButton(text="😞 Жалоба", callback_data="admin_request_complaint")],
-        [InlineKeyboardButton(text="🍳 Публикация рецепта", callback_data="admin_request_recipe")],
-        [InlineKeyboardButton(text="📸 Публикация результатов", callback_data="admin_request_results")],
+        [InlineKeyboardButton(text="👨‍💼 Связаться с админом", url="https://t.me/doc_kazachkova_team")],
     ])
     
     await message.answer(
-        "👨‍💼 СВЯЗЬ С АДМИНИСТРАЦИЕЙ\n\nВыберите тип обращения:",
+        "👨‍💼 Свяжитесь с администратором:\n\n"
+        "https://t.me/doc_kazachkova_team",
         reply_markup=keyboard
     )
 

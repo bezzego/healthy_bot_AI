@@ -140,20 +140,18 @@ async def handle_retest_button(message: Message, state):
 
 @router.message(F.text == "👨‍💼 Связаться с админом")
 async def handle_contact_admin_button(message: Message):
-    """Обработка кнопки 'Связаться с админом'"""
+    """Обработка кнопки 'Связаться с админом' - просто ссылка на аккаунт"""
     logger.info(f"User {message.from_user.id} clicked Contact Admin button")
     
     from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💬 Общее обращение", callback_data="admin_request_contact")],
-        [InlineKeyboardButton(text="😞 Жалоба", callback_data="admin_request_complaint")],
-        [InlineKeyboardButton(text="🍳 Публикация рецепта", callback_data="admin_request_recipe")],
-        [InlineKeyboardButton(text="📸 Публикация результатов", callback_data="admin_request_results")],
+        [InlineKeyboardButton(text="👨‍💼 Связаться с админом", url="https://t.me/doc_kazachkova_team")],
     ])
     
     await message.answer(
-        "👨‍💼 СВЯЗЬ С АДМИНИСТРАЦИЕЙ\n\nВыберите тип обращения:",
+        "👨‍💼 Свяжитесь с администратором:\n\n"
+        "https://t.me/doc_kazachkova_team",
         reply_markup=keyboard
     )
 

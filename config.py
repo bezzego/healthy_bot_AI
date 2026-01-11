@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     # Timezone для всего проекта (московское время)
     DEFAULT_TIMEZONE: str = "Europe/Moscow"
     
+    # OpenAI API для распознавания еды
+    OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
+    
     @property
     def admin_ids(self) -> List[int]:
         """Получить список ID администраторов"""

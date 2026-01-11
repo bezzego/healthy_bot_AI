@@ -8,7 +8,6 @@ from database.models import User
 from sqlalchemy import select
 from services.nutrition import add_nutrition_record, search_food_in_database
 from services.daily_scenarios import save_morning_sleep_quality, save_evening_report
-from services.admin import create_admin_request
 from services.onboarding import save_answer, QUESTIONNAIRE_FLOW, get_current_question
 from services.retest import save_retest_answer
 from utils.validators import parse_number, validate_scale_value
@@ -16,7 +15,7 @@ from utils.logger import setup_logger
 from config import settings
 from handlers.commands import send_question
 from handlers.fsm_states import (
-    OnboardingStates, RetestStates, AddingFoodStates, AdminRequestStates,
+    OnboardingStates, RetestStates, AddingFoodStates,
     MorningCheckinStates, EveningCheckinStates
 )
 from aiogram.fsm.context import FSMContext
@@ -133,18 +132,12 @@ async def handle_questionnaire_answer(message: Message, state: FSMContext):
         await message.answer("Произошла ошибка при обработке ответа. Попробуйте снова.")
 
 
-@router.message(StateFilter(AddingFoodStates.waiting_for_food))
+@router.message(StateFilter(AddingFoodStates.waiting_for_food), ~F.photo)
 async def handle_adding_food(message: Message, state: FSMContext):
-    """Обработка добавления еды"""
+    """Обработка добавления еды (только текст, не фото)"""
     text = message.text
     user_id = message.from_user.id
     username = message.from_user.username or "без username"
-    
-    # Проверяем, что это текст (не фото)
-    if message.photo:
-        # Если фото, оно обработается в handle_photo
-        logger.debug(f"User {user_id} sent photo in adding_food state, will be handled by handle_photo")
-        return
     
     if not text:
         logger.warning(f"User {user_id} sent message without text in adding_food state")
@@ -280,67 +273,15 @@ async def handle_food_calories(message: Message, state: FSMContext):
             await message.answer("Пользователь не найден")
 
 
-@router.message(StateFilter(AdminRequestStates.waiting_for_message))
-async def handle_admin_request(message: Message, state: FSMContext):
-    """Обработка обращения к администратору"""
-    text = message.text
-    user_id = message.from_user.id
-    state_data = await state.get_data()
-    request_type = state_data.get("type", "contact")
-    
-    async with AsyncSessionLocal() as session:
-        result = await session.execute(
-            select(User).where(User.telegram_id == user_id)
-        )
-        db_user = result.scalar_one_or_none()
-        
-        if db_user:
-            try:
-                request = await create_admin_request(
-                    session=session,
-                    user_id=db_user.id,
-                    request_type=request_type,
-                    message=text
-                )
-                await message.answer(
-                    "✅ Ваше обращение отправлено администратору. Мы свяжемся с вами в ближайшее время."
-                )
-                await state.clear()
-            except Exception as e:
-                await message.answer(f"Ошибка отправки обращения: {str(e)}")
-
-
-@router.message(StateFilter(AdminRequestStates.waiting_for_recipe_composition))
-async def handle_recipe_composition(message: Message, state: FSMContext):
-    """Обработка состава рецепта"""
-    await state.update_data(composition=message.text)
-    await state.set_state(AdminRequestStates.waiting_for_recipe_description)
-    await message.answer("Теперь отправьте описание рецепта (пошаговое приготовление):")
-
-
-@router.message(StateFilter(AdminRequestStates.waiting_for_recipe_description))
-async def handle_recipe_description(message: Message, state: FSMContext):
-    """Обработка описания рецепта"""
-    await state.update_data(description=message.text)
-    await state.set_state(AdminRequestStates.waiting_for_recipe_photo)
-    await message.answer("Отправьте фото рецепта (или отправьте 'пропустить' чтобы продолжить без фото):")
-
-
-@router.message(StateFilter(AdminRequestStates.waiting_for_results_data))
-async def handle_results_data(message: Message, state: FSMContext):
-    """Обработка данных результатов"""
-    await message.answer(
-        "Для публикации результатов отправьте данные в формате:\n"
-        "'Возраст, рост, вес до (дата), вес после (дата), комментарий'\n"
-        "Или используйте интерактивную форму через кнопки."
-    )
-
-
 @router.message(F.photo)
 async def handle_photo(message: Message, state: FSMContext):
     """Обработка фото"""
     user_id = message.from_user.id
     username = message.from_user.username or "без username"
+    
+    # Логируем в самом начале
+    logger.info(f"🔵 handle_photo triggered for user {user_id} (@{username})")
+    
     photo = message.photo[-1] if message.photo else None
     
     if not photo:
@@ -348,8 +289,12 @@ async def handle_photo(message: Message, state: FSMContext):
         return
     
     file_id = photo.file_id if photo else "None"
-    logger.info(f"User {user_id} (@{username}) sent photo (file_id: {file_id[:20]}...)")
+    logger.info(f"📸 User {user_id} (@{username}) sent photo (file_id: {file_id[:20]}...)")
     caption = message.caption or ""
+    
+    # Логируем текущее состояние
+    current_state = await state.get_state()
+    logger.info(f"📋 Current state: {current_state}")
     
     try:
         async with AsyncSessionLocal() as session:
@@ -363,71 +308,101 @@ async def handle_photo(message: Message, state: FSMContext):
                 await message.answer("Пользователь не найден. Используйте /start для начала работы.")
                 return
             
-            current_state = await state.get_state()
+            # current_state уже получен выше
             state_data = await state.get_data()
+            logger.debug(f"State data: {state_data}")
+            
+            # Обрабатываем фото только в нужных состояниях
+            if current_state not in [
+                AddingFoodStates.waiting_for_food,
+                AddingFoodStates.waiting_for_calories
+            ]:
+                logger.debug(f"User {user_id} sent photo but not in relevant state (current: {current_state})")
+                await message.answer("Для добавления еды используйте кнопку '📸 Добавить еду' из меню.")
+                return
             
             # Фото еды
             if current_state == AddingFoodStates.waiting_for_food or current_state == AddingFoodStates.waiting_for_calories:
                 logger.debug(f"User {user_id} sent photo for adding food, state: {current_state}")
-                # Пытаемся извлечь калории из подписи
-                food_name = state_data.get("food_name", "Неизвестное блюдо")
-                calories = 0
                 
-                # Парсим калории из подписи
-                if caption:
-                    logger.debug(f"Photo has caption: '{caption[:50]}'")
-                    parts = caption.split(",")
-                    if parts:
-                        food_name = parts[0].strip()
-                    if len(parts) > 1:
-                        is_valid, value, _ = parse_number(parts[1])
-                        if is_valid:
-                            calories = int(value)
-                            logger.debug(f"Parsed calories from caption: {calories}")
-                
-                if calories == 0:
-                    logger.debug(f"Calories not provided, asking user {user_id} for calories")
-                    await message.answer(
-                        "Калорийность не указана. Введите калорийность этого блюда числом:"
-                    )
-                    await state.update_data(food_name=food_name, photo_file_id=photo.file_id)
-                    await state.set_state(AddingFoodStates.waiting_for_calories)
-                    return
+                # Отправляем сообщение о начале обработки
+                processing_msg = await message.answer("🔍 Анализирую фото еды... Пожалуйста, подождите.")
                 
                 try:
-                    await add_nutrition_record(
-                        session=session,
-                        user_id=db_user.id,
-                        food_name=food_name,
-                        calories=calories,
-                        photo_file_id=photo.file_id
-                    )
-                    await message.answer(
-                        f"✅ Добавлено фото еды: {food_name} - {calories:.0f} ккал"
-                    )
-                    await state.clear()
-                    logger.info(f"User {user_id} successfully added food '{food_name}' ({calories} kcal) from photo")
+                    # Распознаем еду через OpenAI GPT-4 Vision
+                    from services.food_recognition import recognize_food_from_telegram_photo
+                    
+                    bot_instance = message.bot  # Получаем бот из message
+                    recognition_result = await recognize_food_from_telegram_photo(bot_instance, photo.file_id)
+                    
+                    food_name = recognition_result["food_name"]
+                    calories = recognition_result["calories"]
+                    protein = recognition_result["protein"]
+                    fats = recognition_result["fats"]
+                    carbs = recognition_result["carbs"]
+                    
+                    # Если пользователь указал калории в подписи, используем их (приоритет над AI)
+                    if caption:
+                        logger.debug(f"Photo has caption: '{caption[:50]}'")
+                        parts = caption.split(",")
+                        if parts and len(parts) > 1:
+                            is_valid, value, _ = parse_number(parts[1])
+                            if is_valid and value > 0:
+                                calories = float(value)
+                                logger.debug(f"Using calories from caption: {calories}")
+                    
+                    # Если калории = 0 (не распознано), просим указать вручную
+                    if calories == 0:
+                        await processing_msg.delete()
+                        await state.update_data(food_name=food_name, photo_file_id=photo.file_id)
+                        await state.set_state(AddingFoodStates.waiting_for_calories)
+                        await message.answer(
+                            f"Не удалось определить калорийность автоматически.\n\n"
+                            f"Блюдо: {food_name}\n"
+                            f"Пожалуйста, укажите калорийность вручную (например: 350)"
+                        )
+                    else:
+                        # Сохраняем в дневник
+                        await add_nutrition_record(
+                            session=session,
+                            user_id=db_user.id,
+                            food_name=food_name,
+                            calories=calories,
+                            protein=protein,
+                            fats=fats,
+                            carbs=carbs,
+                            photo_file_id=photo.file_id
+                        )
+                        
+                        await processing_msg.delete()
+                        await state.clear()
+                        
+                        # Формируем красивое сообщение с результатами
+                        result_text = f"✅ Блюдо добавлено в дневник!\n\n"
+                        result_text += f"🍽️ {food_name}\n"
+                        result_text += f"🔥 {calories:.0f} ккал\n"
+                        if protein > 0 or fats > 0 or carbs > 0:
+                            result_text += f"📊 Б: {protein:.1f}г | Ж: {fats:.1f}г | У: {carbs:.1f}г"
+                        
+                        await message.answer(result_text)
+                        logger.info(
+                            f"User {user_id} successfully added food '{food_name}' "
+                            f"({calories:.0f} kcal, Б:{protein:.1f} Ж:{fats:.1f} У:{carbs:.1f}) from photo via AI"
+                        )
+                
                 except Exception as e:
-                    logger.error(f"Error adding nutrition record for user {user_id}: {e}", exc_info=True)
-                    await message.answer(f"Ошибка при добавлении записи: {str(e)}")
-            # Фото для рецепта или результатов
-            elif current_state == AdminRequestStates.waiting_for_recipe_photo:
-                logger.debug(f"User {user_id} sent photo for recipe")
-                await state.update_data(recipe_photo_file_id=photo.file_id)
-                await message.answer("Фото сохранено. Теперь отправьте текст обращения.")
-                await state.set_state(AdminRequestStates.waiting_for_message)
-            elif current_state == AdminRequestStates.waiting_for_results_data:
-                logger.debug(f"User {user_id} sent photo for results")
-                if "results_before_photo_file_id" not in state_data or not state_data.get("results_before_photo_file_id"):
-                    await state.update_data(results_before_photo_file_id=photo.file_id)
-                    await message.answer("Фото 'до' сохранено. Теперь отправьте фото 'после'.")
-                else:
-                    await state.update_data(results_after_photo_file_id=photo.file_id)
-                    await message.answer("Фото 'после' сохранено. Теперь отправьте данные (возраст, рост, вес до, вес после, даты, комментарий).")
-            else:
-                # Фото вне состояния добавления еды
-                logger.debug(f"User {user_id} sent photo but not in any relevant state (current: {current_state})")
-                await message.answer("Для добавления еды используйте кнопку '📸 Добавить еду' из меню.")
+                    await processing_msg.delete()
+                    logger.error(f"Error recognizing food for user {user_id}: {e}", exc_info=True)
+                    
+                    # Fallback: просим указать вручную
+                    await state.update_data(photo_file_id=photo.file_id)
+                    await state.set_state(AddingFoodStates.waiting_for_calories)
+                    await message.answer(
+                        "❌ Не удалось автоматически распознать еду на фото.\n\n"
+                        "Пожалуйста, укажите:\n"
+                        "1. Название блюда\n"
+                        "2. Калорийность (например: Овсянка, 350)"
+                    )
     except Exception as e:
         logger.error(f"Error in handle_photo for user {user_id}: {e}", exc_info=True)
         await message.answer("Произошла ошибка при обработке фото. Попробуйте снова.")
