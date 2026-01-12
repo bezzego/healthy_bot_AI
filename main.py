@@ -687,10 +687,79 @@ async def main():
         _bot_instance = bot  # Сохраняем для отправки ошибок
         logger.info("✅ Bot instance created")
         
-        # Middleware для логирования всех входящих обновлений
+        # Middleware для проверки подписки на группу
         from aiogram import BaseMiddleware
         from aiogram.types import Update, Message, CallbackQuery
+        from aiogram.enums import ChatMemberStatus
         
+        class SubscriptionMiddleware(BaseMiddleware):
+            """Middleware для проверки подписки на группу"""
+            def __init__(self, bot: Bot, group_id: int):
+                self.bot = bot
+                self.group_id = group_id
+                self.subscription_message = "Вы не являетесь подписчиком НЕТ ДИЕТ | Клуб здоровья"
+            
+            async def __call__(self, handler, event: Update, data: dict):
+                try:
+                    # Получаем пользователя из события
+                    user = None
+                    chat_id = None
+                    
+                    if isinstance(event, Update):
+                        if event.message:
+                            user = event.message.from_user
+                            chat_id = event.message.chat.id
+                        elif event.callback_query:
+                            user = event.callback_query.from_user
+                            if event.callback_query.message:
+                                chat_id = event.callback_query.message.chat.id
+                        elif event.edited_message:
+                            user = event.edited_message.from_user
+                            chat_id = event.edited_message.chat.id
+                    
+                    # Если пользователь найден, проверяем подписку
+                    if user:
+                        try:
+                            # Получаем информацию о членстве в группе
+                            chat_member = await self.bot.get_chat_member(
+                                chat_id=self.group_id,
+                                user_id=user.id
+                            )
+                            
+                            # Проверяем, что пользователь является участником
+                            if chat_member.status in (ChatMemberStatus.LEFT, ChatMemberStatus.KICKED):
+                                # Пользователь не подписан - отправляем сообщение и не обрабатываем дальше
+                                try:
+                                    if event.message:
+                                        await event.message.answer(self.subscription_message)
+                                    elif event.callback_query:
+                                        await event.callback_query.answer(
+                                            self.subscription_message,
+                                            show_alert=True
+                                        )
+                                    elif event.edited_message:
+                                        await event.edited_message.answer(self.subscription_message)
+                                except Exception as send_error:
+                                    logger.warning(f"Failed to send subscription message to user {user.id}: {send_error}")
+                                
+                                logger.info(f"User {user.id} (@{user.username or 'no username'}) is not subscribed to group {self.group_id}")
+                                return  # Не обрабатываем дальше
+                        
+                        except Exception as check_error:
+                            # Если ошибка при проверке (например, бот не добавлен в группу), логируем и пропускаем
+                            logger.error(f"Error checking subscription for user {user.id}: {check_error}", exc_info=True)
+                            # В случае ошибки пропускаем проверку (чтобы не блокировать бота)
+                    
+                    # Если проверка прошла успешно или пользователь подписан, продолжаем обработку
+                    result = await handler(event, data)
+                    return result
+                
+                except Exception as e:
+                    logger.error(f"Error in SubscriptionMiddleware: {e}", exc_info=True)
+                    # В случае ошибки в middleware пробрасываем дальше
+                    raise
+        
+        # Middleware для логирования всех входящих обновлений
         class LoggingMiddleware(BaseMiddleware):
             """Middleware для логирования всех входящих обновлений"""
             async def __call__(self, handler, event: Update, data: dict):
@@ -730,7 +799,12 @@ async def main():
                     raise
         
         dp = Dispatcher()
+        # Регистрируем middleware в порядке приоритета:
+        # 1. SubscriptionMiddleware - сначала проверяем подписку
+        # 2. LoggingMiddleware - затем логируем
+        dp.update.middleware(SubscriptionMiddleware(bot, settings.REQUIRED_GROUP_ID))
         dp.update.middleware(LoggingMiddleware())
+        logger.debug("Subscription middleware registered")
         logger.debug("Logging middleware registered")
         
         # Регистрируем обработчик ошибок (для aiogram 3.4)

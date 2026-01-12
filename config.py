@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     # OpenAI API для распознавания еды
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
     
+    # Группа для проверки подписки (обязательная подписка)
+    REQUIRED_GROUP_ID: int = int(os.getenv("REQUIRED_GROUP_ID", "-1003681799465"))
+    
     @property
     def admin_ids(self) -> List[int]:
         """Получить список ID администраторов"""
