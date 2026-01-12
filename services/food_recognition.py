@@ -7,13 +7,57 @@ from io import BytesIO
 
 try:
     from openai import AsyncOpenAI
+    import aiohttp
 except ImportError:
     AsyncOpenAI = None
+    aiohttp = None
 
 from config import settings
 
-# Инициализация клиента OpenAI
-client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY) if settings.OPENAI_API_KEY else None
+# Инициализация клиента OpenAI с поддержкой прокси
+def _create_openai_client():
+    """Создать клиент OpenAI с поддержкой прокси"""
+    if not settings.OPENAI_API_KEY:
+        return None
+    
+    if not AsyncOpenAI:
+        return None
+    
+    # Если прокси не указан, создаем обычный клиент
+    if not settings.OPENAI_PROXY:
+        return AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+    
+    # Создаем клиент с прокси
+    # OpenAI использует httpx, который можно настроить через http_client
+    try:
+        import httpx
+        proxy_url = settings.OPENAI_PROXY
+        
+        # В новых версиях httpx (0.28+) используется proxy вместо proxies
+        # Поддерживаем оба варианта для совместимости
+        try:
+            # Пробуем новый формат (proxy)
+            http_client = httpx.AsyncClient(
+                proxy=proxy_url,
+                timeout=httpx.Timeout(60.0, connect=10.0)
+            )
+        except TypeError:
+            # Если не поддерживается, пробуем старый формат (proxies)
+            http_client = httpx.AsyncClient(
+                proxies=proxy_url,
+                timeout=httpx.Timeout(60.0, connect=10.0)
+            )
+        
+        return AsyncOpenAI(
+            api_key=settings.OPENAI_API_KEY,
+            http_client=http_client
+        )
+    except ImportError:
+        # Если httpx не доступен, создаем обычный клиент
+        # (прокси можно настроить через переменные окружения HTTP_PROXY/HTTPS_PROXY)
+        return AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+
+client = _create_openai_client()
 
 
 async def download_photo_from_telegram(bot, file_id: str) -> bytes:
