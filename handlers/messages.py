@@ -336,10 +336,11 @@ async def handle_photo(message: Message, state: FSMContext):
                     recognition_result = await recognize_food_from_telegram_photo(bot_instance, photo.file_id)
                     
                     food_name = recognition_result["food_name"]
-                    calories = recognition_result["calories"]
-                    protein = recognition_result["protein"]
-                    fats = recognition_result["fats"]
-                    carbs = recognition_result["carbs"]
+                    ingredients = recognition_result.get("ingredients", [])
+                    total_calories = recognition_result.get("total_calories", recognition_result.get("calories", 0))
+                    total_protein = recognition_result.get("total_protein", recognition_result.get("protein", 0))
+                    total_fats = recognition_result.get("total_fats", recognition_result.get("fats", 0))
+                    total_carbs = recognition_result.get("total_carbs", recognition_result.get("carbs", 0))
                     
                     # Если пользователь указал калории в подписи, используем их (приоритет над AI)
                     if caption:
@@ -348,11 +349,11 @@ async def handle_photo(message: Message, state: FSMContext):
                         if parts and len(parts) > 1:
                             is_valid, value, _ = parse_number(parts[1])
                             if is_valid and value > 0:
-                                calories = float(value)
-                                logger.debug(f"Using calories from caption: {calories}")
+                                total_calories = float(value)
+                                logger.debug(f"Using calories from caption: {total_calories}")
                     
                     # Если калории = 0 (не распознано), просим указать вручную
-                    if calories == 0:
+                    if total_calories == 0:
                         await processing_msg.delete()
                         await state.update_data(food_name=food_name, photo_file_id=photo.file_id)
                         await state.set_state(AddingFoodStates.waiting_for_calories)
@@ -367,10 +368,10 @@ async def handle_photo(message: Message, state: FSMContext):
                             session=session,
                             user_id=db_user.id,
                             food_name=food_name,
-                            calories=calories,
-                            protein=protein,
-                            fats=fats,
-                            carbs=carbs,
+                            calories=total_calories,
+                            protein=total_protein,
+                            fats=total_fats,
+                            carbs=total_carbs,
                             photo_file_id=photo.file_id
                         )
                         
@@ -379,15 +380,38 @@ async def handle_photo(message: Message, state: FSMContext):
                         
                         # Формируем красивое сообщение с результатами
                         result_text = f"✅ Блюдо добавлено в дневник!\n\n"
-                        result_text += f"🍽️ {food_name}\n"
-                        result_text += f"🔥 {calories:.0f} ккал\n"
-                        if protein > 0 or fats > 0 or carbs > 0:
-                            result_text += f"📊 Б: {protein:.1f}г | Ж: {fats:.1f}г | У: {carbs:.1f}г"
+                        result_text += f"🍽️ {food_name}\n\n"
+                        
+                        # Показываем разбивку по ингредиентам, если есть
+                        if ingredients and len(ingredients) > 0:
+                            result_text += "📋 Состав:\n"
+                            for ing in ingredients:
+                                ing_name = ing.get("name", "")
+                                ing_cal = ing.get("calories", 0)
+                                ing_prot = ing.get("protein", 0)
+                                ing_fats = ing.get("fats", 0)
+                                ing_carbs = ing.get("carbs", 0)
+                                ing_amount = ing.get("amount", "")
+                                
+                                result_text += f"• {ing_name}"
+                                if ing_amount:
+                                    result_text += f" ({ing_amount})"
+                                result_text += f"\n  🔥 {ing_cal:.0f} ккал | Б: {ing_prot:.1f}г | Ж: {ing_fats:.1f}г | У: {ing_carbs:.1f}г\n"
+                            
+                            result_text += "\n"
+                        
+                        # Общее КБЖУ
+                        result_text += f"📊 ОБЩЕЕ КБЖУ:\n"
+                        result_text += f"🔥 {total_calories:.0f} ккал\n"
+                        result_text += f"🥩 Белки: {total_protein:.1f} г\n"
+                        result_text += f"🥑 Жиры: {total_fats:.1f} г\n"
+                        result_text += f"🍞 Углеводы: {total_carbs:.1f} г"
                         
                         await message.answer(result_text)
                         logger.info(
                             f"User {user_id} successfully added food '{food_name}' "
-                            f"({calories:.0f} kcal, Б:{protein:.1f} Ж:{fats:.1f} У:{carbs:.1f}) from photo via AI"
+                            f"({total_calories:.0f} kcal, Б:{total_protein:.1f} Ж:{total_fats:.1f} У:{total_carbs:.1f}) "
+                            f"with {len(ingredients)} ingredients from photo via AI"
                         )
                 
                 except Exception as e:
