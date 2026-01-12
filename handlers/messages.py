@@ -378,34 +378,36 @@ async def handle_photo(message: Message, state: FSMContext):
                         await processing_msg.delete()
                         await state.clear()
                         
-                        # Формируем красивое сообщение с результатами
-                        result_text = f"✅ Блюдо добавлено в дневник!\n\n"
-                        result_text += f"🍽️ {food_name}\n\n"
+                        # Формируем сообщение в новом формате
+                        result_text = f"✅ Название: {food_name}\n"
                         
-                        # Показываем разбивку по ингредиентам, если есть
+                        # Список ингредиентов через запятую
                         if ingredients and len(ingredients) > 0:
-                            result_text += "📋 Состав:\n"
-                            for ing in ingredients:
-                                ing_name = ing.get("name", "")
-                                ing_cal = ing.get("calories", 0)
-                                ing_prot = ing.get("protein", 0)
-                                ing_fats = ing.get("fats", 0)
-                                ing_carbs = ing.get("carbs", 0)
-                                ing_amount = ing.get("amount", "")
-                                
-                                result_text += f"• {ing_name}"
-                                if ing_amount:
-                                    result_text += f" ({ing_amount})"
-                                result_text += f"\n  🔥 {ing_cal:.0f} ккал | Б: {ing_prot:.1f}г | Ж: {ing_fats:.1f}г | У: {ing_carbs:.1f}г\n"
-                            
-                            result_text += "\n"
+                            ingredient_names = [ing.get("name", "") for ing in ingredients if ing.get("name")]
+                            if ingredient_names:
+                                result_text += f"📌 Ингредиенты: {', '.join(ingredient_names)}\n"
                         
-                        # Общее КБЖУ
-                        result_text += f"📊 ОБЩЕЕ КБЖУ:\n"
-                        result_text += f"🔥 {total_calories:.0f} ккал\n"
-                        result_text += f"🥩 Белки: {total_protein:.1f} г\n"
-                        result_text += f"🥑 Жиры: {total_fats:.1f} г\n"
-                        result_text += f"🍞 Углеводы: {total_carbs:.1f} г"
+                        # Вес порции (суммируем из amount или используем общий вес)
+                        total_weight = 0
+                        if ingredients and len(ingredients) > 0:
+                            for ing in ingredients:
+                                amount_str = ing.get("amount", "")
+                                if amount_str:
+                                    # Пытаемся извлечь число из строки типа "150г", "200 г"
+                                    import re
+                                    weight_match = re.search(r'(\d+)', amount_str.replace(' ', ''))
+                                    if weight_match:
+                                        total_weight += int(weight_match.group(1))
+                        
+                        if total_weight > 0:
+                            result_text += f"⚖️ Вес порции: {total_weight} грамм\n"
+                        
+                        # КБЖУ
+                        result_text += f"⚡️ Калорийность: {total_calories:.0f} ккал\n"
+                        result_text += f"🍖 Белки: {total_protein:.0f} грамм\n"
+                        result_text += f"🍕 Жиры: {total_fats:.0f} грамм\n"
+                        result_text += f"🍞 Углеводы: {total_carbs:.0f} грамм\n"
+                        result_text += f"💡 Общая калорийность: {total_calories:.0f} ккал"
                         
                         await message.answer(result_text)
                         logger.info(
