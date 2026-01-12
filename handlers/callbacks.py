@@ -115,53 +115,11 @@ async def handle_answer(callback: CallbackQuery, state: FSMContext):
         # Получаем текущее состояние FSM
         state_data = await state.get_data()
         
-        # Определяем тип тестирования или утренний вопрос о сне
+        # Определяем тип тестирования
         if current_state == OnboardingStates.in_progress:
             result = await save_answer(session, db_user.id, answer, skip=skip, state_data=state_data)
         elif current_state == RetestStates.in_progress:
             result = await save_retest_answer(session, db_user.id, answer, state_data=state_data)
-        elif data.startswith("morning_sleep_"):
-            # Новый формат утреннего вопроса о сне
-            from utils.templates import MORNING_SLEEP_OPTIONS
-            from services.daily_scenarios import save_morning_sleep_quality, get_morning_wish
-            from handlers.fsm_states import MorningCheckinStates
-            
-            sleep_index = int(data.split("_")[-1])
-            sleep_quality = MORNING_SLEEP_OPTIONS[sleep_index] if sleep_index < len(MORNING_SLEEP_OPTIONS) else MORNING_SLEEP_OPTIONS[0]
-            
-            await save_morning_sleep_quality(session, db_user.id, sleep_quality)
-            await state.set_state(MorningCheckinStates.waiting_for_energy)
-            
-            keyboard = []
-            row = []
-            for i in range(1, 6):  # Шкала 1-5
-                row.append(InlineKeyboardButton(text=str(i), callback_data=f"morning_energy_{i}"))
-                if len(row) == 3:
-                    keyboard.append(row)
-                    row = []
-            if row:
-                keyboard.append(row)
-            reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
-            
-            await callback.message.edit_text(
-                "⚡ Как вы себя чувствуете? Оцените энергию от 1 до 5, где 1 - нет сил, а 5 - много энергии",
-                reply_markup=reply_markup
-            )
-            return
-        
-        elif data.startswith("morning_energy_"):
-            # Завершение утреннего чек-ина
-            from services.daily_scenarios import save_morning_energy, get_morning_wish
-            
-            energy = int(data.split("_")[-1])
-            await save_morning_energy(session, db_user.id, energy)
-            
-            wish = get_morning_wish()
-            await callback.message.edit_text(
-                f"Зафиксировал ваши ответы. Не забудьте выпить стакан воды. {wish}"
-            )
-            await state.clear()
-            return
         
         elif current_state is None and answer_value.isdigit():
             # Старый формат (для совместимости)
@@ -388,6 +346,91 @@ async def handle_retest(callback: CallbackQuery, state: FSMContext):
                 await send_question_message(callback, result["current_question"], state)
 
 
+
+
+@router.callback_query(F.data.startswith("morning_sleep_"))
+async def handle_morning_sleep(callback: CallbackQuery, state: FSMContext):
+    """Обработка выбора качества сна в утреннем чек-ине"""
+    await callback.answer()
+    
+    user_id = callback.from_user.id
+    logger.info(f"User {user_id} selected morning sleep: {callback.data}")
+    
+    try:
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(
+                select(User).where(User.telegram_id == user_id)
+            )
+            db_user = result.scalar_one_or_none()
+            
+            if not db_user:
+                await callback.message.edit_text("Пользователь не найден")
+                return
+            
+            from utils.templates import MORNING_SLEEP_OPTIONS
+            from services.daily_scenarios import save_morning_sleep_quality
+            from handlers.fsm_states import MorningCheckinStates
+            
+            sleep_index = int(callback.data.split("_")[-1])
+            sleep_quality = MORNING_SLEEP_OPTIONS[sleep_index] if sleep_index < len(MORNING_SLEEP_OPTIONS) else MORNING_SLEEP_OPTIONS[0]
+            
+            await save_morning_sleep_quality(session, db_user.id, sleep_quality)
+            await state.set_state(MorningCheckinStates.waiting_for_energy)
+            
+            keyboard = []
+            row = []
+            for i in range(1, 6):  # Шкала 1-5
+                row.append(InlineKeyboardButton(text=str(i), callback_data=f"morning_energy_{i}"))
+                if len(row) == 3:
+                    keyboard.append(row)
+                    row = []
+            if row:
+                keyboard.append(row)
+            reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+            
+            await callback.message.edit_text(
+                "⚡ Как вы себя чувствуете? Оцените энергию от 1 до 5, где 1 - нет сил, а 5 - много энергии",
+                reply_markup=reply_markup
+            )
+            logger.info(f"User {user_id} sleep quality saved: {sleep_quality}, waiting for energy")
+    except Exception as e:
+        logger.error(f"Error in handle_morning_sleep for user {user_id}: {e}", exc_info=True)
+        await callback.message.edit_text("Произошла ошибка. Попробуйте снова.")
+
+
+@router.callback_query(F.data.startswith("morning_energy_"))
+async def handle_morning_energy(callback: CallbackQuery, state: FSMContext):
+    """Обработка выбора энергии в утреннем чек-ине"""
+    await callback.answer()
+    
+    user_id = callback.from_user.id
+    logger.info(f"User {user_id} selected morning energy: {callback.data}")
+    
+    try:
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(
+                select(User).where(User.telegram_id == user_id)
+            )
+            db_user = result.scalar_one_or_none()
+            
+            if not db_user:
+                await callback.message.edit_text("Пользователь не найден")
+                return
+            
+            from services.daily_scenarios import save_morning_energy, get_morning_wish
+            
+            energy = int(callback.data.split("_")[-1])
+            await save_morning_energy(session, db_user.id, energy)
+            
+            wish = get_morning_wish()
+            await callback.message.edit_text(
+                f"Зафиксировал ваши ответы. Не забудьте выпить стакан воды. {wish}"
+            )
+            await state.clear()
+            logger.info(f"User {user_id} morning check-in completed, energy: {energy}")
+    except Exception as e:
+        logger.error(f"Error in handle_morning_energy for user {user_id}: {e}", exc_info=True)
+        await callback.message.edit_text("Произошла ошибка. Попробуйте снова.")
 
 
 @router.callback_query(F.data == "menu_back")
