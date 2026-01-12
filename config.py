@@ -33,6 +33,9 @@ class Settings(BaseSettings):
     
     # OpenAI API для распознавания еды
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
+    # Прокси для OpenAI API (для работы из России)
+    # Формат: http://user:pass@host:port или http://host:port
+    OPENAI_PROXY: str = os.getenv("OPENAI_PROXY", "")
     
     # Группа для проверки подписки (обязательная подписка)
     REQUIRED_GROUP_ID: int = int(os.getenv("REQUIRED_GROUP_ID", "-1003681799465"))
