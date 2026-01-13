@@ -16,7 +16,7 @@ from config import settings
 from handlers.commands import send_question
 from handlers.fsm_states import (
     OnboardingStates, RetestStates, AddingFoodStates,
-    MorningCheckinStates, EveningCheckinStates
+    MorningCheckinStates, EveningCheckinStates, MonthlyMeasurementStates
 )
 from aiogram.fsm.context import FSMContext
 
@@ -462,6 +462,159 @@ async def handle_evening_steps(message: Message, state: FSMContext):
     logger.debug(f"User {message.from_user.id} waiting for activity answer")
 
 
+
+
+@router.message(StateFilter(MonthlyMeasurementStates.waiting_for_weight))
+async def handle_monthly_weight(message: Message, state: FSMContext):
+    """Обработка веса в ежемесячных замерах"""
+    user_id = message.from_user.id
+    text = message.text
+    
+    try:
+        from utils.validators import parse_number
+        
+        is_valid, value, error = parse_number(text)
+        if not is_valid:
+            await message.answer(f"Пожалуйста, введите число (вес в кг). Например: 65.5")
+            return
+        
+        weight = float(value)
+        if weight <= 0 or weight > 300:
+            await message.answer("Вес должен быть от 1 до 300 кг. Попробуйте еще раз.")
+            return
+        
+        await state.update_data(weight=weight)
+        await state.set_state(MonthlyMeasurementStates.waiting_for_waist)
+        await message.answer("Укажите обхват талии (см):\nНапример: 75")
+        
+    except Exception as e:
+        logger.error(f"Error handling monthly weight for user {user_id}: {e}", exc_info=True)
+        await message.answer("Произошла ошибка. Попробуйте еще раз.")
+
+
+@router.message(StateFilter(MonthlyMeasurementStates.waiting_for_waist))
+async def handle_monthly_waist(message: Message, state: FSMContext):
+    """Обработка обхвата талии"""
+    user_id = message.from_user.id
+    text = message.text
+    
+    try:
+        from utils.validators import parse_number
+        
+        is_valid, value, error = parse_number(text)
+        if not is_valid:
+            await message.answer(f"Пожалуйста, введите число (обхват талии в см). Например: 75")
+            return
+        
+        waist = float(value)
+        if waist <= 0 or waist > 200:
+            await message.answer("Обхват талии должен быть от 1 до 200 см. Попробуйте еще раз.")
+            return
+        
+        await state.update_data(waist_circumference=waist)
+        await state.set_state(MonthlyMeasurementStates.waiting_for_hips)
+        await message.answer("Укажите обхват бёдер (см):\nНапример: 95")
+        
+    except Exception as e:
+        logger.error(f"Error handling monthly waist for user {user_id}: {e}", exc_info=True)
+        await message.answer("Произошла ошибка. Попробуйте еще раз.")
+
+
+@router.message(StateFilter(MonthlyMeasurementStates.waiting_for_hips))
+async def handle_monthly_hips(message: Message, state: FSMContext):
+    """Обработка обхвата бёдер"""
+    user_id = message.from_user.id
+    text = message.text
+    
+    try:
+        from utils.validators import parse_number
+        
+        is_valid, value, error = parse_number(text)
+        if not is_valid:
+            await message.answer(f"Пожалуйста, введите число (обхват бёдер в см). Например: 95")
+            return
+        
+        hips = float(value)
+        if hips <= 0 or hips > 200:
+            await message.answer("Обхват бёдер должен быть от 1 до 200 см. Попробуйте еще раз.")
+            return
+        
+        await state.update_data(hips_circumference=hips)
+        await state.set_state(MonthlyMeasurementStates.waiting_for_chest)
+        await message.answer("Укажите обхват груди (см):\nНапример: 90")
+        
+    except Exception as e:
+        logger.error(f"Error handling monthly hips for user {user_id}: {e}", exc_info=True)
+        await message.answer("Произошла ошибка. Попробуйте еще раз.")
+
+
+@router.message(StateFilter(MonthlyMeasurementStates.waiting_for_chest))
+async def handle_monthly_chest(message: Message, state: FSMContext):
+    """Обработка обхвата груди и завершение замеров"""
+    user_id = message.from_user.id
+    text = message.text
+    
+    try:
+        from utils.validators import parse_number
+        from services.monthly_measurements import save_monthly_measurement
+        from services.reports import get_monthly_report, format_monthly_report_text
+        from services.monthly_measurements import get_previous_month_measurement
+        
+        is_valid, value, error = parse_number(text)
+        if not is_valid:
+            await message.answer(f"Пожалуйста, введите число (обхват груди в см). Например: 90")
+            return
+        
+        chest = float(value)
+        if chest <= 0 or chest > 200:
+            await message.answer("Обхват груди должен быть от 1 до 200 см. Попробуйте еще раз.")
+            return
+        
+        state_data = await state.get_data()
+        weight = state_data.get("weight")
+        waist = state_data.get("waist_circumference")
+        hips = state_data.get("hips_circumference")
+        
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(
+                select(User).where(User.telegram_id == user_id)
+            )
+            db_user = result.scalar_one_or_none()
+            
+            if not db_user:
+                await message.answer("Пользователь не найден")
+                await state.clear()
+                return
+            
+            # Сохраняем замеры
+            measurement = await save_monthly_measurement(
+                session=session,
+                user_id=db_user.id,
+                weight=weight,
+                waist_circumference=waist,
+                hips_circumference=hips,
+                chest_circumference=chest
+            )
+            
+            # Получаем предыдущий месяц для сравнения
+            previous_measurement = await get_previous_month_measurement(session, db_user.id)
+            
+            # Получаем статистику за месяц
+            stats = await get_monthly_report(session, db_user.id, measurement, previous_measurement)
+            
+            # Формируем и отправляем отчет
+            report_text = format_monthly_report_text(stats)
+            await message.answer(report_text)
+            
+            await state.clear()
+            logger.info(
+                f"Monthly measurements saved and report sent to user {user_id}: "
+                f"weight={weight}, waist={waist}, hips={hips}, chest={chest}"
+            )
+        
+    except Exception as e:
+        logger.error(f"Error handling monthly chest for user {user_id}: {e}", exc_info=True)
+        await message.answer("Произошла ошибка при сохранении замеров. Попробуйте еще раз.")
 
 
 @router.message()

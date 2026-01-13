@@ -48,6 +48,14 @@ class EveningCheckinStates(StatesGroup):
     waiting_for_stool = State()
 
 
+class MonthlyMeasurementStates(StatesGroup):
+    """Состояния ежемесячных замеров"""
+    waiting_for_weight = State()
+    waiting_for_waist = State()
+    waiting_for_hips = State()
+    waiting_for_chest = State()
+
+
 # Импортируем в __init__ handlers для удобства
 __all__ = [
     'OnboardingStates',
@@ -56,5 +64,6 @@ __all__ = [
     'AdminRequestStates',
     'NotificationSettingsStates',
     'MorningCheckinStates',
-    'EveningCheckinStates'
+    'EveningCheckinStates',
+    'MonthlyMeasurementStates'
 ]

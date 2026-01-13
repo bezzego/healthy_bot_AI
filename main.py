@@ -361,7 +361,7 @@ async def check_and_send_evening_reminders(bot: Bot):
         await send_error_to_admins("Critical error in check_and_send_evening_reminders", str(e))
 
 
-def setup_scheduler(bot: Bot):
+def setup_scheduler(bot: Bot, dp: Dispatcher = None):
     """Настроить планировщик задач для работы с персональными часовыми поясами пользователей"""
     moscow_tz = settings.DEFAULT_TIMEZONE
     scheduler = AsyncIOScheduler(timezone=moscow_tz)
@@ -405,7 +405,7 @@ def setup_scheduler(bot: Bot):
     scheduler.add_job(
         check_and_send_monthly_reports,
         CronTrigger(minute="*/15", timezone=moscow_tz),  # Каждые 15 минут - проверяем всех пользователей
-        args=[bot],
+        args=[bot, dp],
         id="check_monthly_reports",
         replace_existing=True
     )
@@ -494,7 +494,7 @@ async def check_and_send_weekly_reports(bot: Bot):
         await send_error_to_admins("Critical error in check_and_send_weekly_reports", str(e))
 
 
-async def check_and_send_monthly_reports(bot: Bot):
+async def check_and_send_monthly_reports(bot: Bot, dp: Dispatcher = None):
     """Проверить и отправить месячные отчёты пользователям в их персональное время (последний день месяца в 22:00)"""
     logger.debug("Checking users for monthly reports based on personal timezone")
     
@@ -540,20 +540,54 @@ async def check_and_send_monthly_reports(bot: Bot):
                         is_last_day = current_date.day == last_day
                         
                         if is_last_day and current_hour == 22 and 0 <= current_minute < 15:
-                            # Получаем статистику за месяц
-                            stats = await get_monthly_report(session, user.id)
+                            # Проверяем, есть ли уже замеры за этот месяц
+                            from services.monthly_measurements import get_current_month_measurement
+                            current_measurement = await get_current_month_measurement(session, user.id)
                             
-                            # Отправляем только если есть данные
-                            if stats.get("morning_count", 0) > 0 or stats.get("evening_count", 0) > 0:
-                                report_text = format_monthly_report_text(stats)
+                            if current_measurement and current_measurement.weight:
+                                # Замеры уже есть - отправляем отчет
+                                from services.monthly_measurements import get_previous_month_measurement
+                                previous_measurement = await get_previous_month_measurement(session, user.id)
+                                
+                                # Получаем статистику за месяц с замерами
+                                stats = await get_monthly_report(session, user.id, current_measurement, previous_measurement)
+                                
+                                # Отправляем только если есть данные
+                                if stats.get("morning_count", 0) > 0 or stats.get("evening_count", 0) > 0:
+                                    report_text = format_monthly_report_text(stats)
+                                    
+                                    await bot.send_message(
+                                        chat_id=user.telegram_id,
+                                        text=report_text
+                                    )
+                                    sent_count += 1
+                                    logger.info(
+                                        f"Monthly report sent to user {user.telegram_id} at {timezone_str} "
+                                        f"last day 22:00 (local time: {user_local_time.strftime('%Y-%m-%d %H:%M')})"
+                                    )
+                            else:
+                                # Замеров нет - запрашиваем их
+                                from handlers.fsm_states import MonthlyMeasurementStates
+                                from aiogram.fsm.context import FSMContext
+                                
+                                # Устанавливаем состояние через dispatcher.fsm
+                                if dp:
+                                    state: FSMContext = dp.fsm.get_context(
+                                        bot=bot,
+                                        chat_id=user.telegram_id,
+                                        user_id=user.telegram_id
+                                    )
+                                    await state.set_state(MonthlyMeasurementStates.waiting_for_weight)
                                 
                                 await bot.send_message(
                                     chat_id=user.telegram_id,
-                                    text=report_text
+                                    text="📊 Ежемесячный отчёт\n\n"
+                                         "Для формирования отчёта за месяц нам нужны ваши замеры.\n\n"
+                                         "Укажите ваш текущий вес (кг):\n"
+                                         "Например: 65.5"
                                 )
-                                sent_count += 1
                                 logger.info(
-                                    f"Monthly report sent to user {user.telegram_id} at {timezone_str} "
+                                    f"Monthly measurement request sent to user {user.telegram_id} at {timezone_str} "
                                     f"last day 22:00 (local time: {user_local_time.strftime('%Y-%m-%d %H:%M')})"
                                 )
                     except (ValueError, pytz.exceptions.UnknownTimeZoneError) as tz_error:
@@ -851,7 +885,7 @@ async def main():
         
         # Настраиваем планировщик
         logger.debug("Setting up scheduler...")
-        scheduler = setup_scheduler(bot)
+        scheduler = setup_scheduler(bot, dp)
         logger.info("✅ Scheduler configured")
         
         logger.info("=" * 60)

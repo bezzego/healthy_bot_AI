@@ -1,5 +1,5 @@
 """Сервис для недельных и месячных отчётов"""
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, and_
 from datetime import datetime, date, timedelta
@@ -72,7 +72,7 @@ async def get_weekly_report(session: AsyncSession, user_id: int) -> Dict[str, An
     }
 
 
-async def get_monthly_report(session: AsyncSession, user_id: int) -> Dict[str, Any]:
+async def get_monthly_report(session: AsyncSession, user_id: int, current_measurement: Optional[Any] = None, previous_measurement: Optional[Any] = None) -> Dict[str, Any]:
     """Получить месячный отчёт"""
     today = date.today()
     month_start = date(today.year, today.month, 1)
@@ -131,7 +131,7 @@ async def get_monthly_report(session: AsyncSession, user_id: int) -> Dict[str, A
     total_stool_count = sum(1 for r in records if r.evening_stool and r.evening_stool != "Нет")
     stool_stability = "стабильная" if (total_stool_count > 0 and normal_stool_count > total_stool_count * 0.7) else "нестабильная"
     
-    return {
+    result = {
         "morning_count": morning_count,
         "evening_count": evening_count,
         "good_sleep": good_sleep,
@@ -146,6 +146,32 @@ async def get_monthly_report(session: AsyncSession, user_id: int) -> Dict[str, A
         "total_stool_count": total_stool_count,
         "total_days": len(records)
     }
+    
+    # Добавляем данные о замерах, если они есть
+    if current_measurement:
+        result["current_weight"] = current_measurement.weight
+        result["current_waist"] = current_measurement.waist_circumference
+        result["current_hips"] = current_measurement.hips_circumference
+        result["current_chest"] = current_measurement.chest_circumference
+        
+        # Добавляем сравнение с предыдущим месяцем, если есть
+        if previous_measurement:
+            result["previous_weight"] = previous_measurement.weight
+            result["previous_waist"] = previous_measurement.waist_circumference
+            result["previous_hips"] = previous_measurement.hips_circumference
+            result["previous_chest"] = previous_measurement.chest_circumference
+            
+            # Вычисляем изменения
+            if current_measurement.weight and previous_measurement.weight:
+                result["weight_change"] = round(current_measurement.weight - previous_measurement.weight, 1)
+            if current_measurement.waist_circumference and previous_measurement.waist_circumference:
+                result["waist_change"] = round(current_measurement.waist_circumference - previous_measurement.waist_circumference, 1)
+            if current_measurement.hips_circumference and previous_measurement.hips_circumference:
+                result["hips_change"] = round(current_measurement.hips_circumference - previous_measurement.hips_circumference, 1)
+            if current_measurement.chest_circumference and previous_measurement.chest_circumference:
+                result["chest_change"] = round(current_measurement.chest_circumference - previous_measurement.chest_circumference, 1)
+    
+    return result
 
 
 def format_weekly_report_text(stats: Dict[str, Any]) -> str:
@@ -202,6 +228,47 @@ def format_monthly_report_text(stats: Dict[str, Any]) -> str:
     """Форматировать текст месячного отчёта"""
     text = "📊 Готов ваш отчёт за месяц\n\n"
     text += "Посмотрим общую картину и динамику.\n\n"
+    
+    # Замеры и вес (если есть)
+    if stats.get('current_weight'):
+        text += "⚖️ ВЕС И ЗАМЕРЫ:\n"
+        text += f"Вес: {stats['current_weight']:.1f} кг"
+        
+        if stats.get('weight_change') is not None:
+            change = stats['weight_change']
+            if change > 0:
+                text += f" (+{change:.1f} кг)"
+            elif change < 0:
+                text += f" ({change:.1f} кг)"  # Отрицательное значение уже содержит минус
+            else:
+                text += " (без изменений)"
+        text += "\n"
+        
+        if stats.get('current_waist'):
+            text += f"Талия: {stats['current_waist']:.1f} см"
+            if stats.get('waist_change') is not None:
+                change = stats['waist_change']
+                if change != 0:
+                    text += f" ({change:+.1f} см)"
+            text += "\n"
+        
+        if stats.get('current_hips'):
+            text += f"Бёдра: {stats['current_hips']:.1f} см"
+            if stats.get('hips_change') is not None:
+                change = stats['hips_change']
+                if change != 0:
+                    text += f" ({change:+.1f} см)"
+            text += "\n"
+        
+        if stats.get('current_chest'):
+            text += f"Грудь: {stats['current_chest']:.1f} см"
+            if stats.get('chest_change') is not None:
+                change = stats['chest_change']
+                if change != 0:
+                    text += f" ({change:+.1f} см)"
+            text += "\n"
+        
+        text += "\n"
     
     text += f"Дней с утренними чек-инами: {stats['morning_count']}\n"
     text += f"Дней с вечерними чек-инами: {stats['evening_count']}\n\n"

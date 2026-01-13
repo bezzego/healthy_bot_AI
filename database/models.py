@@ -28,6 +28,7 @@ class User(Base):
     daily_records = relationship("DailyRecord", back_populates="user")
     nutrition_records = relationship("NutritionRecord", back_populates="user")
     admin_requests = relationship("AdminRequest", back_populates="user")
+    monthly_measurements = relationship("MonthlyMeasurement", back_populates="user")
     
     # Состояние для FSM
     current_state = Column(String, nullable=True)
@@ -217,3 +218,26 @@ class AdminRequest(Base):
     
     # Связи
     user = relationship("User", back_populates="admin_requests")
+
+
+class MonthlyMeasurement(Base):
+    """Модель ежемесячных замеров (вес и обхваты)"""
+    __tablename__ = "monthly_measurements"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    
+    # Дата замера (месяц и год)
+    measurement_date = Column(DateTime, nullable=False, index=True)  # Первый день месяца
+    
+    # Вес и замеры
+    weight = Column(Float, nullable=True)  # кг
+    waist_circumference = Column(Float, nullable=True)  # обхват талии (см)
+    hips_circumference = Column(Float, nullable=True)  # обхват бедер (см)
+    chest_circumference = Column(Float, nullable=True)  # обхват груди (см)
+    
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+    
+    # Связи
+    user = relationship("User", back_populates="monthly_measurements")
