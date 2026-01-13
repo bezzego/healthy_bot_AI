@@ -719,36 +719,48 @@ async def main():
                     
                     # Если пользователь найден, проверяем подписку
                     if user:
-                        try:
-                            # Получаем информацию о членстве в группе
-                            chat_member = await self.bot.get_chat_member(
-                                chat_id=self.group_id,
-                                user_id=user.id
-                            )
-                            
-                            # Проверяем, что пользователь является участником
-                            if chat_member.status in (ChatMemberStatus.LEFT, ChatMemberStatus.KICKED):
-                                # Пользователь не подписан - отправляем сообщение и не обрабатываем дальше
-                                try:
-                                    if event.message:
-                                        await event.message.answer(self.subscription_message)
-                                    elif event.callback_query:
-                                        await event.callback_query.answer(
-                                            self.subscription_message,
-                                            show_alert=True
-                                        )
-                                    elif event.edited_message:
-                                        await event.edited_message.answer(self.subscription_message)
-                                except Exception as send_error:
-                                    logger.warning(f"Failed to send subscription message to user {user.id}: {send_error}")
+                        # Пропускаем проверку для администраторов бота
+                        from services.admin import is_admin
+                        if is_admin(user.id):
+                            logger.debug(f"User {user.id} is bot admin, skipping subscription check")
+                        else:
+                            try:
+                                # Получаем информацию о членстве в группе
+                                chat_member = await self.bot.get_chat_member(
+                                    chat_id=self.group_id,
+                                    user_id=user.id
+                                )
                                 
-                                logger.info(f"User {user.id} (@{user.username or 'no username'}) is not subscribed to group {self.group_id}")
-                                return  # Не обрабатываем дальше
-                        
-                        except Exception as check_error:
-                            # Если ошибка при проверке (например, бот не добавлен в группу), логируем и пропускаем
-                            logger.error(f"Error checking subscription for user {user.id}: {check_error}", exc_info=True)
-                            # В случае ошибки пропускаем проверку (чтобы не блокировать бота)
+                                # Логируем статус для отладки
+                                logger.debug(f"User {user.id} (@{user.username or 'no username'}) chat member status: {chat_member.status}")
+                                
+                                # Проверяем, что пользователь является участником
+                                # Если статус LEFT или KICKED - пользователь не подписан
+                                if chat_member.status in (ChatMemberStatus.LEFT, ChatMemberStatus.KICKED):
+                                    # Пользователь не подписан - отправляем сообщение и не обрабатываем дальше
+                                    try:
+                                        if event.message:
+                                            await event.message.answer(self.subscription_message)
+                                        elif event.callback_query:
+                                            await event.callback_query.answer(
+                                                self.subscription_message,
+                                                show_alert=True
+                                            )
+                                        elif event.edited_message:
+                                            await event.edited_message.answer(self.subscription_message)
+                                    except Exception as send_error:
+                                        logger.warning(f"Failed to send subscription message to user {user.id}: {send_error}")
+                                    
+                                    logger.info(f"User {user.id} (@{user.username or 'no username'}) is not subscribed to group {self.group_id} (status: {chat_member.status})")
+                                    return  # Не обрабатываем дальше
+                                else:
+                                    # Пользователь подписан (MEMBER, ADMINISTRATOR, CREATOR, RESTRICTED)
+                                    logger.debug(f"User {user.id} is subscribed to group {self.group_id} (status: {chat_member.status})")
+                            
+                            except Exception as check_error:
+                                # Если ошибка при проверке (например, бот не добавлен в группу), логируем и пропускаем
+                                logger.error(f"Error checking subscription for user {user.id}: {check_error}", exc_info=True)
+                                # В случае ошибки пропускаем проверку (чтобы не блокировать бота)
                     
                     # Если проверка прошла успешно или пользователь подписан, продолжаем обработку
                     result = await handler(event, data)
