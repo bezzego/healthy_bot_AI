@@ -48,6 +48,13 @@ async def save_morning_sleep_quality(session: AsyncSession, user_id: int, sleep_
     await session.commit()
 
 
+async def save_morning_sleep_hours(session: AsyncSession, user_id: int, sleep_hours: int) -> None:
+    """Сохранить количество часов сна утром"""
+    daily_record = await get_or_create_daily_record(session, user_id)
+    daily_record.morning_sleep_hours = sleep_hours
+    await session.commit()
+
+
 async def save_morning_energy(session: AsyncSession, user_id: int, energy: int) -> None:
     """Сохранить уровень энергии утром (1-5)"""
     daily_record = await get_or_create_daily_record(session, user_id)

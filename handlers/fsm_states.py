@@ -37,6 +37,7 @@ class NotificationSettingsStates(StatesGroup):
 class MorningCheckinStates(StatesGroup):
     """Состояния утреннего чек-ина"""
     waiting_for_sleep_quality = State()
+    waiting_for_sleep_hours = State()
     waiting_for_energy = State()
 
 

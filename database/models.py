@@ -131,6 +131,7 @@ class DailyRecord(Base):
     
     # Утренние показатели
     morning_sleep_quality = Column(String, nullable=True)  # Варианты: "Почти не спала", "Просыпалась 2+ раза", "Проснулась 1 раз", "Спала отлично"
+    morning_sleep_hours = Column(Integer, nullable=True)  # Количество часов сна (1-12)
     morning_energy = Column(Integer, nullable=True)  # 1-5
     
     # Вечерние показатели
