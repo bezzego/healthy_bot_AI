@@ -349,9 +349,37 @@ async def handle_food_confirmation_text_or_voice(message: Message, state: FSMCon
 async def handle_food_correction(message: Message, state: FSMContext):
     """Обработка корректировки информации о еде (старый путь через кнопку 'Исправить')"""
     user_id = message.from_user.id
-    correction_text = message.text
+    username = message.from_user.username or "без username"
     
     try:
+        # Получаем текст коррекции (может быть текст или голос)
+        correction_text = None
+        
+        if message.text:
+            correction_text = message.text
+            logger.info(f"User {user_id} (@{username}) sent text correction: '{correction_text[:50]}'")
+        elif message.voice:
+            # Голосовое сообщение - расшифровываем
+            processing_msg = await message.answer("🔊 Расшифровываю голосовое сообщение...")
+            try:
+                from services.food_recognition import transcribe_voice_to_text
+                bot_instance = message.bot
+                correction_text = await transcribe_voice_to_text(bot_instance, message.voice.file_id)
+                await processing_msg.delete()
+                logger.info(f"User {user_id} voice transcribed: '{correction_text[:50]}'")
+            except Exception as e:
+                await processing_msg.delete()
+                logger.error(f"Error transcribing voice for user {user_id}: {e}", exc_info=True)
+                await message.answer("❌ Не удалось расшифровать голосовое сообщение. Попробуйте отправить текстом.")
+                return
+        else:
+            await message.answer("Пожалуйста, отправьте текст или голосовое сообщение с коррекцией.")
+            return
+        
+        if not correction_text or not correction_text.strip():
+            await message.answer("Текст коррекции пуст. Попробуйте еще раз.")
+            return
+        
         state_data = await state.get_data()
         
         # Просим указать название и калории вручную после коррекции
