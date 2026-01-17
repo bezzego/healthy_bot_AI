@@ -7,7 +7,7 @@ from typing import Optional
 from datetime import datetime
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
-from aiogram.enums import ParseMode
+from aiogram.enums import ParseMode, ChatType
 from aiogram.types import Update
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -661,25 +661,47 @@ async def error_handler(event) -> bool:
         except Exception as admin_error:
             logger.error(f"Failed to send error to admins: {admin_error}", exc_info=True)
         
-        # Пытаемся отправить сообщение пользователю, если есть update
+        # Пытаемся отправить сообщение пользователю, если есть update (только для приватных чатов)
         if update:
             try:
                 bot = _bot_instance
                 if bot:
                     if hasattr(update, 'message') and update.message:
-                        await bot.send_message(
-                            chat_id=update.message.chat.id,
-                            text="❌ Произошла ошибка при обработке вашего запроса. "
-                                 "Мы уже получили уведомление и исправим проблему."
-                        )
-                        logger.debug(f"Error notification sent to user {update.message.from_user.id}")
+                        # Проверяем, что это приватный чат, а не канал или группа
+                        if hasattr(update.message.chat, 'type') and update.message.chat.type == 'private':
+                            await bot.send_message(
+                                chat_id=update.message.chat.id,
+                                text="❌ Произошла ошибка при обработке вашего запроса. "
+                                     "Мы уже получили уведомление и исправим проблему."
+                            )
+                            logger.debug(f"Error notification sent to user {update.message.from_user.id}")
+                        else:
+                            logger.debug(f"Skipping error notification for non-private chat (type: {getattr(update.message.chat, 'type', 'unknown')})")
                     elif hasattr(update, 'callback_query') and update.callback_query:
-                        await bot.answer_callback_query(
-                            callback_query_id=update.callback_query.id,
-                            text="Произошла ошибка. Мы уже получили уведомление.",
-                            show_alert=True
-                        )
-                        logger.debug(f"Error notification sent to user {update.callback_query.from_user.id}")
+                        # Для callback_query проверяем тип чата из message, если есть
+                        callback_message = getattr(update.callback_query, 'message', None)
+                        if callback_message and hasattr(callback_message, 'chat'):
+                            chat_type = getattr(callback_message.chat, 'type', None)
+                            if chat_type == 'private':
+                                await bot.answer_callback_query(
+                                    callback_query_id=update.callback_query.id,
+                                    text="Произошла ошибка. Мы уже получили уведомление.",
+                                    show_alert=True
+                                )
+                                logger.debug(f"Error notification sent to user {update.callback_query.from_user.id}")
+                            else:
+                                logger.debug(f"Skipping error notification for non-private chat (type: {chat_type})")
+                        else:
+                            # Если нет информации о чате, пытаемся отправить (для обратной совместимости)
+                            try:
+                                await bot.answer_callback_query(
+                                    callback_query_id=update.callback_query.id,
+                                    text="Произошла ошибка. Мы уже получили уведомление.",
+                                    show_alert=True
+                                )
+                                logger.debug(f"Error notification sent to user {update.callback_query.from_user.id}")
+                            except Exception:
+                                logger.debug(f"Could not send callback answer for user {update.callback_query.from_user.id}")
             except Exception as user_error:
                 logger.warning(f"Could not send error message to user: {user_error}", exc_info=True)
         
@@ -725,6 +747,33 @@ async def main():
         from aiogram import BaseMiddleware
         from aiogram.types import Update, Message, CallbackQuery
         from aiogram.enums import ChatMemberStatus
+        
+        class ChannelFilterMiddleware(BaseMiddleware):
+            """Middleware для фильтрации сообщений из каналов и групп - бот работает только с приватными чатами"""
+            async def __call__(self, handler, event: Update, data: dict):
+                try:
+                    # Проверяем тип чата и игнорируем каналы и группы
+                    if isinstance(event, Update):
+                        if event.message:
+                            chat_type = getattr(event.message.chat, 'type', None)
+                            if chat_type and chat_type in (ChatType.CHANNEL, ChatType.GROUP, ChatType.SUPERGROUP):
+                                # Игнорируем сообщения из каналов и групп
+                                logger.debug(f"Ignoring message from {chat_type} (chat_id: {event.message.chat.id})")
+                                return
+                        elif event.callback_query and event.callback_query.message:
+                            chat_type = getattr(event.callback_query.message.chat, 'type', None)
+                            if chat_type and chat_type in (ChatType.CHANNEL, ChatType.GROUP, ChatType.SUPERGROUP):
+                                # Игнорируем callback из каналов и групп
+                                logger.debug(f"Ignoring callback from {chat_type} (chat_id: {event.callback_query.message.chat.id})")
+                                return
+                    
+                    # Если это приватный чат или тип не определен - обрабатываем дальше
+                    result = await handler(event, data)
+                    return result
+                except Exception as e:
+                    logger.error(f"Error in ChannelFilterMiddleware: {e}", exc_info=True)
+                    # В случае ошибки пропускаем обработку
+                    return
         
         class SubscriptionMiddleware(BaseMiddleware):
             """Middleware для проверки подписки на группу"""
@@ -846,8 +895,10 @@ async def main():
         
         dp = Dispatcher()
         # Регистрируем middleware в порядке приоритета:
-        # 1. SubscriptionMiddleware - сначала проверяем подписку
-        # 2. LoggingMiddleware - затем логируем
+        # 1. ChannelFilterMiddleware - сначала фильтруем каналы и группы
+        # 2. SubscriptionMiddleware - затем проверяем подписку
+        # 3. LoggingMiddleware - затем логируем
+        dp.update.middleware(ChannelFilterMiddleware())
         dp.update.middleware(SubscriptionMiddleware(bot, settings.REQUIRED_GROUP_ID))
         dp.update.middleware(LoggingMiddleware())
         logger.debug("Subscription middleware registered")

@@ -617,7 +617,7 @@ async def handle_monthly_chest(message: Message, state: FSMContext):
         await message.answer("Произошла ошибка при сохранении замеров. Попробуйте еще раз.")
 
 
-@router.message()
+@router.message(F.chat.type == "private")
 async def handle_default(message: Message):
-    """Обработчик по умолчанию"""
+    """Обработчик по умолчанию (только для приватных чатов)"""
     await message.answer("Используйте кнопки меню для доступа к функциям бота.")
