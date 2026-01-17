@@ -556,3 +556,98 @@ async def process_food_correction(
         
     except Exception as e:
         raise Exception(f"Ошибка при обработке коррекции через OpenAI: {e}")
+
+
+async def process_food_description_from_text(description_text: str) -> Dict[str, any]:
+    """
+    Обработать текстовое/голосовое описание еды через OpenAI и определить КБЖУ
+    
+    Args:
+        description_text: Текст описания еды (например: "Овсянка с бананом, 350 ккал")
+    
+    Returns:
+        Dict с данными о еде (food_name, ingredients, total_calories, etc.)
+    """
+    if not client:
+        raise Exception("OpenAI API ключ не настроен. Добавьте OPENAI_API_KEY в .env файл")
+    
+    prompt = f"""Проанализируй описание еды и определи КБЖУ максимально точно.
+
+Описание от пользователя:
+"{description_text}"
+
+Задача:
+1. Определи название блюда
+2. Определи все основные ингредиенты (компоненты)
+3. Для КАЖДОГО ингредиента укажи КБЖУ (калории, белки, жиры, углеводы в граммах)
+4. Если пользователь указал калории или вес порции - используй эти данные
+5. Укажи общее КБЖУ всего блюда (сумма всех ингредиентов)
+
+Ответ дай строго в формате JSON:
+{{
+  "food_name": "название блюда на русском",
+  "ingredients": [
+    {{
+      "name": "название ингредиента на русском",
+      "calories": число (ккал),
+      "protein": число (граммы),
+      "fats": число (граммы),
+      "carbs": число (граммы),
+      "amount": "примерное количество (опционально, например: '150г', '1 шт')"
+    }}
+  ],
+  "total_calories": число (общая калорийность всего блюда),
+  "total_protein": число (общие белки в граммах),
+  "total_fats": число (общие жиры в граммах),
+  "total_carbs": число (общие углеводы в граммах),
+  "description": "краткое описание блюда (опционально)"
+}}
+
+Важно:
+- Если в описании указаны калории (например: "350 ккал") - используй их как ориентир
+- Определи ВСЕ основные ингредиенты, которые упомянуты в описании
+- Для каждого ингредиента укажи максимально точное КБЖУ
+- total_calories, total_protein, total_fats, total_carbs должны быть суммой всех ингредиентов
+- Если точно определить нельзя, используй профессиональные базы данных КБЖУ продуктов"""
+    
+    try:
+        # Вызываем GPT API для обработки описания
+        response = await client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+            max_tokens=1500,
+            temperature=0.2
+        )
+        
+        # Извлекаем ответ
+        content = response.choices[0].message.content
+        if not content:
+            raise Exception("Пустой ответ от OpenAI API")
+        
+        # Парсим JSON из ответа
+        content_clean = content.strip()
+        if content_clean.startswith("```json"):
+            content_clean = content_clean[7:]
+        if content_clean.startswith("```"):
+            content_clean = content_clean[3:]
+        if content_clean.endswith("```"):
+            content_clean = content_clean[:-3]
+        content_clean = content_clean.strip()
+        
+        # Парсим JSON
+        try:
+            result = json.loads(content_clean)
+        except json.JSONDecodeError:
+            # Если JSON не распарсился, пытаемся извлечь данные через regex
+            result = parse_food_data_from_text(content)
+        
+        # Валидация и нормализация результата
+        return validate_and_normalize_result(result)
+        
+    except Exception as e:
+        raise Exception(f"Ошибка при обработке описания еды через OpenAI: {e}")

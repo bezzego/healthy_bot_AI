@@ -134,20 +134,44 @@ async def handle_questionnaire_answer(message: Message, state: FSMContext):
 
 @router.message(StateFilter(AddingFoodStates.waiting_for_food), ~F.photo)
 async def handle_adding_food(message: Message, state: FSMContext):
-    """Обработка добавления еды (только текст, не фото)"""
-    text = message.text
+    """Обработка добавления еды (текст или голос, не фото)"""
     user_id = message.from_user.id
     username = message.from_user.username or "без username"
     
-    if not text:
-        logger.warning(f"User {user_id} sent message without text in adding_food state")
-        await message.answer("Пожалуйста, отправьте название блюда текстом или фото еды.")
+    # Получаем текст описания
+    description_text = None
+    
+    if message.text:
+        description_text = message.text
+        logger.info(f"User {user_id} (@{username}) adding food text: '{description_text[:50]}'")
+    elif message.voice:
+        # Голосовое сообщение - расшифровываем
+        processing_msg = await message.answer("🔊 Расшифровываю голосовое сообщение...")
+        try:
+            from services.food_recognition import transcribe_voice_to_text
+            bot_instance = message.bot
+            description_text = await transcribe_voice_to_text(bot_instance, message.voice.file_id)
+            await processing_msg.delete()
+            logger.info(f"User {user_id} voice transcribed: '{description_text[:50]}'")
+        except Exception as e:
+            await processing_msg.delete()
+            logger.error(f"Error transcribing voice for user {user_id}: {e}", exc_info=True)
+            await message.answer("❌ Не удалось расшифровать голосовое сообщение. Попробуйте отправить текстом.")
+            return
+    else:
+        logger.warning(f"User {user_id} sent message without text or voice in adding_food state")
+        await message.answer("Пожалуйста, отправьте название блюда текстом, голосом или фото еды.")
         return
     
-    text_preview = text[:50] if text else "[no text]"
-    logger.info(f"User {user_id} (@{username}) adding food: '{text_preview}'")
+    if not description_text or not description_text.strip():
+        await message.answer("Текст описания пуст. Попробуйте еще раз.")
+        return
     
     try:
+        state_data = await state.get_data()
+        photo_not_recognized = state_data.get("photo_not_recognized", False)
+        photo_file_id = state_data.get("photo_file_id")
+        
         async with AsyncSessionLocal() as session:
             result_db = await session.execute(
                 select(User).where(User.telegram_id == user_id)
@@ -159,14 +183,83 @@ async def handle_adding_food(message: Message, state: FSMContext):
                 await message.answer("Пользователь не найден")
                 return
             
-            # Пытаемся найти продукт в базе
-            foods = search_food_in_database(text)
+            # Если фото не было распознано - обрабатываем описание через нейросеть
+            if photo_not_recognized:
+                processing_msg = await message.answer("🤖 Обрабатываю описание через нейросеть...")
+                try:
+                    from services.food_recognition import process_food_description_from_text
+                    food_data = await process_food_description_from_text(description_text)
+                    
+                    await processing_msg.delete()
+                    
+                    # Сохраняем данные в состояние и показываем с кнопками
+                    await state.update_data(
+                        food_name=food_data["food_name"],
+                        total_calories=food_data["total_calories"],
+                        total_protein=food_data["total_protein"],
+                        total_fats=food_data["total_fats"],
+                        total_carbs=food_data["total_carbs"],
+                        ingredients=food_data.get("ingredients", []),
+                        photo_file_id=photo_file_id
+                    )
+                    await state.set_state(AddingFoodStates.waiting_for_food_confirmation)
+                    
+                    # Формируем сообщение с информацией
+                    food_name = food_data["food_name"]
+                    ingredients = food_data.get("ingredients", [])
+                    total_calories = food_data["total_calories"]
+                    total_protein = food_data["total_protein"]
+                    total_fats = food_data["total_fats"]
+                    total_carbs = food_data["total_carbs"]
+                    
+                    result_text = f"✅ Название: {food_name}\n"
+                    
+                    if ingredients:
+                        ingredient_names = [ing.get("name", "") for ing in ingredients if ing.get("name")]
+                        if ingredient_names:
+                            result_text += f"📌 Ингредиенты: {', '.join(ingredient_names)}\n"
+                    
+                    total_weight = 0
+                    if ingredients:
+                        import re
+                        for ing in ingredients:
+                            amount_str = ing.get("amount", "")
+                            if amount_str:
+                                weight_match = re.search(r'(\d+)', amount_str.replace(' ', ''))
+                                if weight_match:
+                                    total_weight += int(weight_match.group(1))
+                    
+                    if total_weight > 0:
+                        result_text += f"⚖️ Вес порции: {total_weight} грамм\n"
+                    
+                    result_text += f"⚡️ Калорийность: {total_calories:.0f} ккал\n"
+                    result_text += f"🍖 Белки: {total_protein:.0f} грамм\n"
+                    result_text += f"🍕 Жиры: {total_fats:.0f} грамм\n"
+                    result_text += f"🍞 Углеводы: {total_carbs:.0f} грамм\n"
+                    result_text += f"💡 Общая калорийность: {total_calories:.0f} ккал"
+                    
+                    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                        [
+                            InlineKeyboardButton(text="Зафиксировать", callback_data="food_confirm"),
+                            InlineKeyboardButton(text="Исправить", callback_data="food_correct")
+                        ],
+                        [InlineKeyboardButton(text="Отменить", callback_data="food_cancel")]
+                    ])
+                    
+                    await message.answer(result_text, reply_markup=keyboard)
+                    logger.info(f"User {user_id}: Food description processed ({total_calories:.0f} kcal), waiting for confirmation")
+                    return
+                except Exception as e:
+                    await processing_msg.delete()
+                    logger.error(f"Error processing food description for user {user_id}: {e}", exc_info=True)
+                    # Fallback на старый способ
+            
+            # Старый способ - поиск в базе или ручной ввод
+            foods = search_food_in_database(description_text)
         
             if foods:
-                # Если найдено несколько, предлагаем выбрать
                 if len(foods) == 1:
                     food = foods[0]
-                    # Автоматически добавляем
                     try:
                         await add_nutrition_record(
                             session=session,
@@ -176,7 +269,8 @@ async def handle_adding_food(message: Message, state: FSMContext):
                             protein=food.get("protein", 0),
                             fats=food.get("fats", 0),
                             carbs=food.get("carbs", 0),
-                            fiber=food.get("fiber", 0)
+                            fiber=food.get("fiber", 0),
+                            photo_file_id=photo_file_id
                         )
                         await message.answer(
                             f"✅ Добавлено: {food['name']} - {food['calories']} ккал"
@@ -185,9 +279,8 @@ async def handle_adding_food(message: Message, state: FSMContext):
                     except Exception as e:
                         await message.answer(f"Ошибка: {str(e)}")
                 else:
-                    # Множественный выбор
                     keyboard = []
-                    for food in foods[:5]:  # Максимум 5 вариантов
+                    for food in foods[:5]:
                         keyboard.append([InlineKeyboardButton(
                             text=f"{food['name']} ({food['calories']} ккал)",
                             callback_data=f"select_food_{food['name']}"
@@ -198,14 +291,13 @@ async def handle_adding_food(message: Message, state: FSMContext):
                         reply_markup=reply_markup
                     )
             else:
-                # Не найдено - просим ввести калории вручную
                 await message.answer(
                     "Продукт не найден в базе. Отправьте калорийность блюда в формате:\n"
                     "'Название блюда, калории' (например: 'Овсянка с фруктами, 350')"
                 )
-                await state.update_data(food_name=text)
+                await state.update_data(food_name=description_text, photo_file_id=photo_file_id)
                 await state.set_state(AddingFoodStates.waiting_for_calories)
-                logger.debug(f"User {user_id} food '{text}' not found, asked for calories")
+                logger.debug(f"User {user_id} food '{description_text}' not found, asked for calories")
     except Exception as e:
         logger.error(f"Error in handle_adding_food for user {user_id}: {e}", exc_info=True)
         await message.answer("Произошла ошибка. Попробуйте снова.")
@@ -624,8 +716,11 @@ async def handle_photo(message: Message, state: FSMContext):
                                 logger.debug(f"Using calories from caption: {total_calories}")
                     
                     # Если калории = 0 (не распознано), показываем лояльное сообщение
+                    # Сохраняем file_id и переводим в состояние ожидания описания
                     if total_calories == 0:
                         await processing_msg.delete()
+                        await state.update_data(photo_file_id=photo.file_id, photo_not_recognized=True)
+                        await state.set_state(AddingFoodStates.waiting_for_food)  # Используем то же состояние для описания
                         await message.answer(
                             "Не могу понять, что у вас на фото 😔\n\n"
                             "Опишите блюдо в голосовом сообщении или текстом.\n\n"
@@ -633,7 +728,6 @@ async def handle_photo(message: Message, state: FSMContext):
                             "• «Овсянка с бананом, 350 ккал»\n"
                             "• «Куриная грудка с овощами, 280 ккал»"
                         )
-                        await state.clear()
                         logger.info(f"User {user_id}: Food not recognized (calories=0), requested manual input")
                     else:
                         # Не сохраняем сразу, а показываем кнопки для подтверждения
@@ -729,6 +823,9 @@ async def handle_photo(message: Message, state: FSMContext):
                         logger.warning(f"Technical error in food recognition for user {user_id}, admins notified")
                     else:
                         # Нетехническая ошибка (не распознано) - лояльное сообщение
+                        # Сохраняем file_id и переводим в состояние ожидания описания
+                        await state.update_data(photo_file_id=photo.file_id, photo_not_recognized=True)
+                        await state.set_state(AddingFoodStates.waiting_for_food)
                         await message.answer(
                             "Не могу понять, что у вас на фото 😔\n\n"
                             "Опишите блюдо в голосовом сообщении или текстом.\n\n"
@@ -736,7 +833,6 @@ async def handle_photo(message: Message, state: FSMContext):
                             "• «Овсянка с бананом, 350 ккал»\n"
                             "• «Куриная грудка с овощами, 280 ккал»"
                         )
-                        await state.clear()
                         logger.info(f"User {user_id}: Food not recognized (non-technical error), requested manual input")
     except Exception as e:
         logger.error(f"Error in handle_photo for user {user_id}: {e}", exc_info=True)
