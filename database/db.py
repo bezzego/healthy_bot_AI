@@ -32,8 +32,26 @@ async def get_db() -> AsyncSession:
 
 
 async def init_db():
-    """Инициализировать БД (создать таблицы)"""
-    from database.models import User, Questionnaire, DailyRecord, NutritionRecord, AdminRequest
+    """Инициализировать БД (создать таблицы и применить миграции)"""
+    from database.models import User, Questionnaire, DailyRecord, NutritionRecord, AdminRequest, MonthlyMeasurement
+    from sqlalchemy import inspect, text
     
     async with engine.begin() as conn:
+        # Создаем все таблицы
         await conn.run_sync(Base.metadata.create_all)
+        
+        # Применяем миграции для существующих таблиц
+        # Проверяем наличие колонки morning_sleep_hours в таблице daily_records
+        def check_and_migrate(connection):
+            inspector = inspect(connection)
+            if 'daily_records' in inspector.get_table_names():
+                columns = [col['name'] for col in inspector.get_columns('daily_records')]
+                if 'morning_sleep_hours' not in columns:
+                    try:
+                        connection.execute(text("ALTER TABLE daily_records ADD COLUMN morning_sleep_hours INTEGER"))
+                        # commit не нужен - транзакция управляется контекстным менеджером engine.begin()
+                    except Exception:
+                        # Если ошибка (например, колонка уже существует) - игнорируем
+                        pass
+        
+        await conn.run_sync(check_and_migrate)
