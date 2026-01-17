@@ -211,6 +211,33 @@ async def handle_adding_food(message: Message, state: FSMContext):
         await message.answer("Произошла ошибка. Попробуйте снова.")
 
 
+@router.message(StateFilter(AddingFoodStates.waiting_for_food_correction))
+async def handle_food_correction(message: Message, state: FSMContext):
+    """Обработка корректировки информации о еде"""
+    user_id = message.from_user.id
+    correction_text = message.text
+    
+    try:
+        state_data = await state.get_data()
+        
+        # Просим указать название и калории вручную после коррекции
+        await state.update_data(
+            photo_file_id=state_data.get("photo_file_id"),
+            correction=correction_text
+        )
+        await state.set_state(AddingFoodStates.waiting_for_calories)
+        
+        await message.answer(
+            "Понял, что нужно исправить. Укажите название блюда и калорийность:\n\n"
+            "Например: Овсянка с бананом, 350"
+        )
+        logger.info(f"User {user_id} provided correction: {correction_text[:50]}")
+    except Exception as e:
+        logger.error(f"Error handling food correction for user {user_id}: {e}", exc_info=True)
+        await message.answer("Произошла ошибка. Попробуйте еще раз.")
+        await state.clear()
+
+
 @router.message(StateFilter(AddingFoodStates.waiting_for_calories))
 async def handle_food_calories(message: Message, state: FSMContext):
     """Обработка ввода калорий для еды"""
@@ -352,31 +379,33 @@ async def handle_photo(message: Message, state: FSMContext):
                                 total_calories = float(value)
                                 logger.debug(f"Using calories from caption: {total_calories}")
                     
-                    # Если калории = 0 (не распознано), просим указать вручную
+                    # Если калории = 0 (не распознано), показываем лояльное сообщение
                     if total_calories == 0:
                         await processing_msg.delete()
-                        await state.update_data(food_name=food_name, photo_file_id=photo.file_id)
-                        await state.set_state(AddingFoodStates.waiting_for_calories)
                         await message.answer(
-                            f"Не удалось определить калорийность автоматически.\n\n"
-                            f"Блюдо: {food_name}\n"
-                            f"Пожалуйста, укажите калорийность вручную (например: 350)"
+                            "Не могу понять, что у вас на фото 😔\n\n"
+                            "Опишите блюдо в голосовом сообщении или текстом.\n\n"
+                            "Например:\n"
+                            "• «Овсянка с бананом, 350 ккал»\n"
+                            "• «Куриная грудка с овощами, 280 ккал»"
                         )
+                        await state.clear()
+                        logger.info(f"User {user_id}: Food not recognized (calories=0), requested manual input")
                     else:
-                        # Сохраняем в дневник
-                        await add_nutrition_record(
-                            session=session,
-                            user_id=db_user.id,
+                        # Не сохраняем сразу, а показываем кнопки для подтверждения
+                        await processing_msg.delete()
+                        
+                        # Сохраняем данные во временное состояние
+                        await state.update_data(
                             food_name=food_name,
-                            calories=total_calories,
-                            protein=total_protein,
-                            fats=total_fats,
-                            carbs=total_carbs,
+                            total_calories=total_calories,
+                            total_protein=total_protein,
+                            total_fats=total_fats,
+                            total_carbs=total_carbs,
+                            ingredients=ingredients,
                             photo_file_id=photo.file_id
                         )
-                        
-                        await processing_msg.delete()
-                        await state.clear()
+                        await state.set_state(AddingFoodStates.waiting_for_food_confirmation)
                         
                         # Формируем сообщение в новом формате
                         result_text = f"✅ Название: {food_name}\n"
@@ -390,11 +419,11 @@ async def handle_photo(message: Message, state: FSMContext):
                         # Вес порции (суммируем из amount или используем общий вес)
                         total_weight = 0
                         if ingredients and len(ingredients) > 0:
+                            import re
                             for ing in ingredients:
                                 amount_str = ing.get("amount", "")
                                 if amount_str:
                                     # Пытаемся извлечь число из строки типа "150г", "200 г"
-                                    import re
                                     weight_match = re.search(r'(\d+)', amount_str.replace(' ', ''))
                                     if weight_match:
                                         total_weight += int(weight_match.group(1))
@@ -409,26 +438,62 @@ async def handle_photo(message: Message, state: FSMContext):
                         result_text += f"🍞 Углеводы: {total_carbs:.0f} грамм\n"
                         result_text += f"💡 Общая калорийность: {total_calories:.0f} ккал"
                         
-                        await message.answer(result_text)
+                        # Добавляем кнопки
+                        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                            [
+                                InlineKeyboardButton(text="Зафиксировать", callback_data="food_confirm"),
+                                InlineKeyboardButton(text="Исправить", callback_data="food_correct")
+                            ],
+                            [InlineKeyboardButton(text="Отменить", callback_data="food_cancel")]
+                        ])
+                        
+                        await message.answer(result_text, reply_markup=keyboard)
                         logger.info(
-                            f"User {user_id} successfully added food '{food_name}' "
-                            f"({total_calories:.0f} kcal, Б:{total_protein:.1f} Ж:{total_fats:.1f} У:{total_carbs:.1f}) "
-                            f"with {len(ingredients)} ingredients from photo via AI"
+                            f"User {user_id}: Food recognized '{food_name}' "
+                            f"({total_calories:.0f} kcal), waiting for confirmation"
                         )
                 
                 except Exception as e:
                     await processing_msg.delete()
+                    error_msg = str(e)
                     logger.error(f"Error recognizing food for user {user_id}: {e}", exc_info=True)
                     
-                    # Fallback: просим указать вручную
-                    await state.update_data(photo_file_id=photo.file_id)
-                    await state.set_state(AddingFoodStates.waiting_for_calories)
-                    await message.answer(
-                        "❌ Не удалось автоматически распознать еду на фото.\n\n"
-                        "Пожалуйста, укажите:\n"
-                        "1. Название блюда\n"
-                        "2. Калорийность (например: Овсянка, 350)"
-                    )
+                    # Определяем тип ошибки: техническая или нетехническая
+                    is_technical_error = any(keyword in error_msg.lower() for keyword in [
+                        "api key", "openai api ключ", "не настроен", "недоступен",
+                        "connection", "timeout", "network", "proxy", "403", "401",
+                        "rate limit", "quota", "server error", "500", "502", "503"
+                    ])
+                    
+                    if is_technical_error:
+                        # Техническая ошибка - показываем базовое сообщение и уведомляем админов
+                        from main import send_error_to_admins
+                        await send_error_to_admins(
+                            f"Техническая ошибка при распознавании еды",
+                            f"User: {user_id} (@{username})\nError: {error_msg}",
+                            f"Photo recognition failed"
+                        )
+                        
+                        await state.update_data(photo_file_id=photo.file_id)
+                        await state.set_state(AddingFoodStates.waiting_for_calories)
+                        await message.answer(
+                            "❌ Не удалось автоматически распознать еду на фото.\n\n"
+                            "Пожалуйста, укажите:\n"
+                            "1. Название блюда\n"
+                            "2. Калорийность (например: Овсянка, 350)"
+                        )
+                        logger.warning(f"Technical error in food recognition for user {user_id}, admins notified")
+                    else:
+                        # Нетехническая ошибка (не распознано) - лояльное сообщение
+                        await message.answer(
+                            "Не могу понять, что у вас на фото 😔\n\n"
+                            "Опишите блюдо в голосовом сообщении или текстом.\n\n"
+                            "Например:\n"
+                            "• «Овсянка с бананом, 350 ккал»\n"
+                            "• «Куриная грудка с овощами, 280 ккал»"
+                        )
+                        await state.clear()
+                        logger.info(f"User {user_id}: Food not recognized (non-technical error), requested manual input")
     except Exception as e:
         logger.error(f"Error in handle_photo for user {user_id}: {e}", exc_info=True)
         await message.answer("Произошла ошибка при обработке фото. Попробуйте снова.")

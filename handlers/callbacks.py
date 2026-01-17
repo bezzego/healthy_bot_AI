@@ -15,6 +15,7 @@ from utils.logger import setup_logger
 from config import settings
 from handlers.commands import send_question
 from handlers.fsm_states import OnboardingStates, RetestStates, AddingFoodStates
+from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 import json
 
@@ -734,6 +735,91 @@ async def handle_evening_energy_old(callback: CallbackQuery, state: FSMContext):
         await callback.message.edit_text("Произошла ошибка. Попробуйте снова.")
 
 
+@router.callback_query(F.data == "food_confirm")
+async def handle_food_confirm(callback: CallbackQuery, state: FSMContext):
+    """Подтверждение и сохранение информации о еде"""
+    await callback.answer()
+    user_id = callback.from_user.id
+    
+    try:
+        state_data = await state.get_data()
+        food_name = state_data.get("food_name")
+        total_calories = state_data.get("total_calories", 0)
+        total_protein = state_data.get("total_protein", 0)
+        total_fats = state_data.get("total_fats", 0)
+        total_carbs = state_data.get("total_carbs", 0)
+        photo_file_id = state_data.get("photo_file_id")
+        
+        if not food_name or total_calories == 0:
+            await safe_edit_message(callback, "Ошибка: данные о еде не найдены. Попробуйте снова.")
+            await state.clear()
+            return
+        
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(
+                select(User).where(User.telegram_id == user_id)
+            )
+            db_user = result.scalar_one_or_none()
+            
+            if not db_user:
+                await safe_edit_message(callback, "Пользователь не найден")
+                await state.clear()
+                return
+            
+            from services.nutrition import add_nutrition_record
+            await add_nutrition_record(
+                session=session,
+                user_id=db_user.id,
+                food_name=food_name,
+                calories=total_calories,
+                protein=total_protein,
+                fats=total_fats,
+                carbs=total_carbs,
+                photo_file_id=photo_file_id
+            )
+            
+            await safe_edit_message(
+                callback,
+                f"✅ Блюдо '{food_name}' зафиксировано!\n\n"
+                f"📊 {total_calories:.0f} ккал (Б:{total_protein:.0f} Ж:{total_fats:.0f} У:{total_carbs:.0f})"
+            )
+            await state.clear()
+            logger.info(
+                f"User {user_id} confirmed food '{food_name}' "
+                f"({total_calories:.0f} kcal) from photo"
+            )
+    except Exception as e:
+        logger.error(f"Error confirming food for user {user_id}: {e}", exc_info=True)
+        await safe_edit_message(callback, "Произошла ошибка при сохранении. Попробуйте снова.")
+        await state.clear()
+
+
+@router.callback_query(F.data == "food_cancel")
+async def handle_food_cancel(callback: CallbackQuery, state: FSMContext):
+    """Отмена добавления еды"""
+    await callback.answer()
+    await safe_edit_message(callback, "❌ Добавление еды отменено.")
+    await state.clear()
+    logger.info(f"User {callback.from_user.id} cancelled food addition")
+
+
+@router.callback_query(F.data == "food_correct")
+async def handle_food_correct(callback: CallbackQuery, state: FSMContext):
+    """Начать редактирование информации о еде"""
+    await callback.answer()
+    user_id = callback.from_user.id
+    
+    await state.set_state(AddingFoodStates.waiting_for_food_correction)
+    await safe_edit_message(
+        callback,
+        "📝 Пришли текст: что добавить или изменить.\n\n"
+        "Ты можешь скорректировать, если я ошиблась с граммовкой или неверно распознала блюдо.\n\n"
+        "Например:\n"
+        "«Здесь не 100 грамм, а 50»\n"
+        "Или\n"
+        "«Это не йогурт, а сметана»"
+    )
+    logger.info(f"User {user_id} requested food information correction")
 
 
 async def send_question_message(callback: CallbackQuery, question: dict, state: FSMContext):

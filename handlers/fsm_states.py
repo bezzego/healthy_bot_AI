@@ -16,6 +16,8 @@ class AddingFoodStates(StatesGroup):
     """Состояния добавления еды"""
     waiting_for_food = State()
     waiting_for_calories = State()
+    waiting_for_food_confirmation = State()
+    waiting_for_food_correction = State()
 
 
 class AdminRequestStates(StatesGroup):
