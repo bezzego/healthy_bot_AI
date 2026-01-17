@@ -374,3 +374,185 @@ async def recognize_food_from_telegram_photo(bot, file_id: str) -> Dict[str, any
     result = await recognize_food_from_image(image_bytes)
     
     return result
+
+
+async def download_voice_from_telegram(bot, file_id: str) -> bytes:
+    """
+    Скачать голосовое сообщение из Telegram и получить байты
+    
+    Args:
+        bot: Экземпляр бота aiogram
+        file_id: ID файла из Telegram
+    
+    Returns:
+        bytes: Байты аудио файла
+    """
+    try:
+        file = await bot.get_file(file_id)
+        voice_bytes = BytesIO()
+        await bot.download_file(file.file_path, destination=voice_bytes)
+        voice_bytes.seek(0)
+        return voice_bytes.read()
+    except Exception as e:
+        raise Exception(f"Ошибка при загрузке голосового сообщения из Telegram: {e}")
+
+
+async def transcribe_voice_to_text(bot, file_id: str) -> str:
+    """
+    Расшифровать голосовое сообщение в текст через OpenAI Whisper
+    
+    Args:
+        bot: Экземпляр бота aiogram
+        file_id: ID файла из Telegram
+    
+    Returns:
+        str: Расшифрованный текст
+    """
+    if not client:
+        raise Exception("OpenAI API ключ не настроен. Добавьте OPENAI_API_KEY в .env файл")
+    
+    try:
+        # Скачиваем голосовое сообщение
+        voice_bytes = await download_voice_from_telegram(bot, file_id)
+        
+        # Создаем BytesIO buffer с установленным именем для определения формата
+        buffer = BytesIO(voice_bytes)
+        buffer.name = "voice.ogg"  # OpenAI определяет формат по расширению
+        buffer.seek(0)
+        
+        # Отправляем в Whisper API
+        transcript = await client.audio.transcriptions.create(
+            model="whisper-1",
+            file=buffer,
+            language="ru"  # Указываем русский язык для лучшей точности
+        )
+        
+        return transcript.text.strip()
+    except Exception as e:
+        raise Exception(f"Ошибка при расшифровке голосового сообщения через Whisper: {e}")
+
+
+async def process_food_correction(
+    current_food_data: Dict[str, any],
+    correction_text: str
+) -> Dict[str, any]:
+    """
+    Обработать коррекцию информации о еде через OpenAI и обновить данные
+    
+    Args:
+        current_food_data: Текущие данные о еде (food_name, ingredients, total_calories, etc.)
+        correction_text: Текст коррекции от пользователя
+    
+    Returns:
+        Dict с обновленными данными о еде
+    """
+    if not client:
+        raise Exception("OpenAI API ключ не настроен. Добавьте OPENAI_API_KEY в .env файл")
+    
+    # Формируем промпт для обработки коррекции
+    current_name = current_food_data.get("food_name", "Неизвестное блюдо")
+    current_calories = current_food_data.get("total_calories", 0)
+    current_protein = current_food_data.get("total_protein", 0)
+    current_fats = current_food_data.get("total_fats", 0)
+    current_carbs = current_food_data.get("total_carbs", 0)
+    current_ingredients = current_food_data.get("ingredients", [])
+    
+    ingredients_text = ""
+    if current_ingredients:
+        ingredient_list = []
+        for ing in current_ingredients:
+            name = ing.get("name", "")
+            amount = ing.get("amount", "")
+            if name:
+                if amount:
+                    ingredient_list.append(f"{name} ({amount})")
+                else:
+                    ingredient_list.append(name)
+        ingredients_text = ", ".join(ingredient_list)
+    
+    prompt = f"""Ты - помощник для точного определения КБЖУ блюда.
+
+Текущая информация о блюде:
+Название: {current_name}
+Ингредиенты: {ingredients_text if ingredients_text else "не указаны"}
+Калории: {current_calories:.0f} ккал
+Белки: {current_protein:.0f} г
+Жиры: {current_fats:.0f} г
+Углеводы: {current_carbs:.0f} г
+
+Пользователь прислал коррекцию/уточнение:
+"{correction_text}"
+
+Задача:
+1. Понять, что именно пользователь хочет изменить (название, ингредиенты, вес порции, КБЖУ)
+2. Обновить данные о блюде с учетом коррекции
+3. Пересчитать КБЖУ максимально точно
+
+Ответ дай строго в формате JSON:
+{{
+  "food_name": "обновленное название блюда на русском",
+  "ingredients": [
+    {{
+      "name": "название ингредиента на русском",
+      "calories": число (ккал),
+      "protein": число (граммы),
+      "fats": число (граммы),
+      "carbs": число (граммы),
+      "amount": "количество (опционально, например: '150г', '1 шт')"
+    }}
+  ],
+  "total_calories": число (общая калорийность),
+  "total_protein": число (общие белки в граммах),
+  "total_fats": число (общие жиры в граммах),
+  "total_carbs": число (общие углеводы в граммах),
+  "description": "краткое описание изменений (опционально)"
+}}
+
+Важно:
+- Учти ВСЕ ингредиенты из исходных данных, если они не указаны для изменения
+- Если пользователь указал новый вес порции - пересчитай КБЖУ пропорционально
+- Если пользователь изменил название ингредиента - обнови его в списке
+- total_calories, total_protein, total_fats, total_carbs должны быть суммой всех ингредиентов
+- Будь максимально точным в расчетах"""
+    
+    try:
+        # Вызываем GPT API для обработки коррекции
+        response = await client.chat.completions.create(
+            model="gpt-4o-mini",  # Используем текстовую модель
+            messages=[
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+            max_tokens=1500,
+            temperature=0.2
+        )
+        
+        # Извлекаем ответ
+        content = response.choices[0].message.content
+        if not content:
+            raise Exception("Пустой ответ от OpenAI API")
+        
+        # Парсим JSON из ответа
+        content_clean = content.strip()
+        if content_clean.startswith("```json"):
+            content_clean = content_clean[7:]
+        if content_clean.startswith("```"):
+            content_clean = content_clean[3:]
+        if content_clean.endswith("```"):
+            content_clean = content_clean[:-3]
+        content_clean = content_clean.strip()
+        
+        # Парсим JSON
+        try:
+            result = json.loads(content_clean)
+        except json.JSONDecodeError:
+            # Если JSON не распарсился, пытаемся извлечь данные через regex
+            result = parse_food_data_from_text(content)
+        
+        # Валидация и нормализация результата
+        return validate_and_normalize_result(result)
+        
+    except Exception as e:
+        raise Exception(f"Ошибка при обработке коррекции через OpenAI: {e}")
