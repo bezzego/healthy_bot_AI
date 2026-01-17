@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from database.db import AsyncSessionLocal
 from database.models import User
 from sqlalchemy import select
-from services.nutrition import add_nutrition_record, search_food_in_database
+from services.nutrition import add_nutrition_record
 from services.daily_scenarios import save_morning_sleep_quality, save_evening_report
 from services.onboarding import save_answer, QUESTIONNAIRE_FLOW, get_current_question
 from services.retest import save_retest_answer
@@ -183,121 +183,80 @@ async def handle_adding_food(message: Message, state: FSMContext):
                 await message.answer("Пользователь не найден")
                 return
             
-            # Если фото не было распознано - обрабатываем описание через нейросеть
-            if photo_not_recognized:
-                processing_msg = await message.answer("🤖 Обрабатываю описание через нейросеть...")
-                try:
-                    from services.food_recognition import process_food_description_from_text
-                    food_data = await process_food_description_from_text(description_text)
-                    
-                    await processing_msg.delete()
-                    
-                    # Сохраняем данные в состояние и показываем с кнопками
-                    await state.update_data(
-                        food_name=food_data["food_name"],
-                        total_calories=food_data["total_calories"],
-                        total_protein=food_data["total_protein"],
-                        total_fats=food_data["total_fats"],
-                        total_carbs=food_data["total_carbs"],
-                        ingredients=food_data.get("ingredients", []),
-                        photo_file_id=photo_file_id
-                    )
-                    await state.set_state(AddingFoodStates.waiting_for_food_confirmation)
-                    
-                    # Формируем сообщение с информацией
-                    food_name = food_data["food_name"]
-                    ingredients = food_data.get("ingredients", [])
-                    total_calories = food_data["total_calories"]
-                    total_protein = food_data["total_protein"]
-                    total_fats = food_data["total_fats"]
-                    total_carbs = food_data["total_carbs"]
-                    
-                    result_text = f"✅ Название: {food_name}\n"
-                    
-                    if ingredients:
-                        ingredient_names = [ing.get("name", "") for ing in ingredients if ing.get("name")]
-                        if ingredient_names:
-                            result_text += f"📌 Ингредиенты: {', '.join(ingredient_names)}\n"
-                    
-                    total_weight = 0
-                    if ingredients:
-                        import re
-                        for ing in ingredients:
-                            amount_str = ing.get("amount", "")
-                            if amount_str:
-                                weight_match = re.search(r'(\d+)', amount_str.replace(' ', ''))
-                                if weight_match:
-                                    total_weight += int(weight_match.group(1))
-                    
-                    if total_weight > 0:
-                        result_text += f"⚖️ Вес порции: {total_weight} грамм\n"
-                    
-                    result_text += f"⚡️ Калорийность: {total_calories:.0f} ккал\n"
-                    result_text += f"🍖 Белки: {total_protein:.0f} грамм\n"
-                    result_text += f"🍕 Жиры: {total_fats:.0f} грамм\n"
-                    result_text += f"🍞 Углеводы: {total_carbs:.0f} грамм\n"
-                    result_text += f"💡 Общая калорийность: {total_calories:.0f} ккал"
-                    
-                    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                        [
-                            InlineKeyboardButton(text="Зафиксировать", callback_data="food_confirm"),
-                            InlineKeyboardButton(text="Исправить", callback_data="food_correct")
-                        ],
-                        [InlineKeyboardButton(text="Отменить", callback_data="food_cancel")]
-                    ])
-                    
-                    await message.answer(result_text, reply_markup=keyboard)
-                    logger.info(f"User {user_id}: Food description processed ({total_calories:.0f} kcal), waiting for confirmation")
-                    return
-                except Exception as e:
-                    await processing_msg.delete()
-                    logger.error(f"Error processing food description for user {user_id}: {e}", exc_info=True)
-                    # Fallback на старый способ
-            
-            # Старый способ - поиск в базе или ручной ввод
-            foods = search_food_in_database(description_text)
-        
-            if foods:
-                if len(foods) == 1:
-                    food = foods[0]
-                    try:
-                        await add_nutrition_record(
-                            session=session,
-                            user_id=db_user.id,
-                            food_name=food["name"],
-                            calories=food["calories"],
-                            protein=food.get("protein", 0),
-                            fats=food.get("fats", 0),
-                            carbs=food.get("carbs", 0),
-                            fiber=food.get("fiber", 0),
-                            photo_file_id=photo_file_id
-                        )
-                        await message.answer(
-                            f"✅ Добавлено: {food['name']} - {food['calories']} ккал"
-                        )
-                        await state.clear()
-                    except Exception as e:
-                        await message.answer(f"Ошибка: {str(e)}")
-                else:
-                    keyboard = []
-                    for food in foods[:5]:
-                        keyboard.append([InlineKeyboardButton(
-                            text=f"{food['name']} ({food['calories']} ккал)",
-                            callback_data=f"select_food_{food['name']}"
-                        )])
-                    reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
-                    await message.answer(
-                        "Найдено несколько вариантов. Выберите нужный:",
-                        reply_markup=reply_markup
-                    )
-            else:
+            # Всегда обрабатываем описание через нейросеть
+            processing_msg = await message.answer("🤖 Обрабатываю описание через нейросеть...")
+            try:
+                from services.food_recognition import process_food_description_from_text
+                food_data = await process_food_description_from_text(description_text)
+                
+                await processing_msg.delete()
+                
+                # Сохраняем данные в состояние и показываем с кнопками
+                await state.update_data(
+                    food_name=food_data["food_name"],
+                    total_calories=food_data["total_calories"],
+                    total_protein=food_data["total_protein"],
+                    total_fats=food_data["total_fats"],
+                    total_carbs=food_data["total_carbs"],
+                    ingredients=food_data.get("ingredients", []),
+                    photo_file_id=photo_file_id
+                )
+                await state.set_state(AddingFoodStates.waiting_for_food_confirmation)
+                
+                # Формируем сообщение с информацией
+                food_name = food_data["food_name"]
+                ingredients = food_data.get("ingredients", [])
+                total_calories = food_data["total_calories"]
+                total_protein = food_data["total_protein"]
+                total_fats = food_data["total_fats"]
+                total_carbs = food_data["total_carbs"]
+                
+                result_text = f"✅ Название: {food_name}\n"
+                
+                if ingredients:
+                    ingredient_names = [ing.get("name", "") for ing in ingredients if ing.get("name")]
+                    if ingredient_names:
+                        result_text += f"📌 Ингредиенты: {', '.join(ingredient_names)}\n"
+                
+                total_weight = 0
+                if ingredients:
+                    import re
+                    for ing in ingredients:
+                        amount_str = ing.get("amount", "")
+                        if amount_str:
+                            weight_match = re.search(r'(\d+)', amount_str.replace(' ', ''))
+                            if weight_match:
+                                total_weight += int(weight_match.group(1))
+                
+                if total_weight > 0:
+                    result_text += f"⚖️ Вес порции: {total_weight} грамм\n"
+                
+                result_text += f"⚡️ Калорийность: {total_calories:.0f} ккал\n"
+                result_text += f"🍖 Белки: {total_protein:.0f} грамм\n"
+                result_text += f"🍕 Жиры: {total_fats:.0f} грамм\n"
+                result_text += f"🍞 Углеводы: {total_carbs:.0f} грамм\n"
+                result_text += f"💡 Общая калорийность: {total_calories:.0f} ккал"
+                
+                keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                    [
+                        InlineKeyboardButton(text="Зафиксировать", callback_data="food_confirm"),
+                        InlineKeyboardButton(text="Исправить", callback_data="food_correct")
+                    ],
+                    [InlineKeyboardButton(text="Отменить", callback_data="food_cancel")]
+                ])
+                
+                await message.answer(result_text, reply_markup=keyboard)
+                logger.info(f"User {user_id}: Food description processed via AI ({total_calories:.0f} kcal), waiting for confirmation")
+            except Exception as e:
+                await processing_msg.delete()
+                logger.error(f"Error processing food description via AI for user {user_id}: {e}", exc_info=True)
                 await message.answer(
-                    "Продукт не найден в базе. Отправьте калорийность блюда в формате:\n"
+                    "❌ Не удалось обработать описание через нейросеть. Попробуйте еще раз или отправьте калорийность вручную в формате:\n"
                     "'Название блюда, калории' (например: 'Овсянка с фруктами, 350')"
                 )
                 await state.update_data(food_name=description_text, photo_file_id=photo_file_id)
                 await state.set_state(AddingFoodStates.waiting_for_calories)
-                logger.debug(f"User {user_id} food '{description_text}' not found, asked for calories")
+                logger.debug(f"User {user_id} food '{description_text}' AI processing failed, fallback to manual input")
     except Exception as e:
         logger.error(f"Error in handle_adding_food for user {user_id}: {e}", exc_info=True)
         await message.answer("Произошла ошибка. Попробуйте снова.")
