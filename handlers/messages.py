@@ -347,15 +347,18 @@ async def handle_food_confirmation_text_or_voice(message: Message, state: FSMCon
 
 @router.message(StateFilter(AddingFoodStates.waiting_for_food_correction))
 async def handle_food_correction(message: Message, state: FSMContext):
-    """Обработка корректировки информации о еде (старый путь через кнопку 'Исправить')"""
+    """Обработка корректировки информации о еде через нейросеть"""
     user_id = message.from_user.id
     username = message.from_user.username or "без username"
     
     try:
-        # Получаем текст коррекции (может быть текст или голос)
+        state_data = await state.get_data()
+        
+        # Получаем текст коррекции
         correction_text = None
         
         if message.text:
+            # Текстовое сообщение
             correction_text = message.text
             logger.info(f"User {user_id} (@{username}) sent text correction: '{correction_text[:50]}'")
         elif message.voice:
@@ -380,24 +383,103 @@ async def handle_food_correction(message: Message, state: FSMContext):
             await message.answer("Текст коррекции пуст. Попробуйте еще раз.")
             return
         
-        state_data = await state.get_data()
+        # Обрабатываем коррекцию через нейросеть
+        processing_msg = await message.answer("🤖 Обрабатываю коррекцию через нейросеть...")
         
-        # Просим указать название и калории вручную после коррекции
-        await state.update_data(
-            photo_file_id=state_data.get("photo_file_id"),
-            correction=correction_text
-        )
-        await state.set_state(AddingFoodStates.waiting_for_calories)
-        
-        await message.answer(
-            "Понял, что нужно исправить. Укажите название блюда и калорийность:\n\n"
-            "Например: Овсянка с бананом, 350"
-        )
-        logger.info(f"User {user_id} provided correction: {correction_text[:50]}")
+        try:
+            from services.food_recognition import process_food_correction
+            
+            # Формируем текущие данные о еде
+            current_food_data = {
+                "food_name": state_data.get("food_name", "Неизвестное блюдо"),
+                "ingredients": state_data.get("ingredients", []),
+                "total_calories": state_data.get("total_calories", 0),
+                "total_protein": state_data.get("total_protein", 0),
+                "total_fats": state_data.get("total_fats", 0),
+                "total_carbs": state_data.get("total_carbs", 0)
+            }
+            
+            # Обрабатываем коррекцию
+            updated_data = await process_food_correction(current_food_data, correction_text)
+            
+            await processing_msg.delete()
+            
+            # Обновляем данные в состоянии
+            await state.update_data(
+                food_name=updated_data["food_name"],
+                total_calories=updated_data["total_calories"],
+                total_protein=updated_data["total_protein"],
+                total_fats=updated_data["total_fats"],
+                total_carbs=updated_data["total_carbs"],
+                ingredients=updated_data.get("ingredients", [])
+            )
+            
+            # Переходим в состояние подтверждения
+            await state.set_state(AddingFoodStates.waiting_for_food_confirmation)
+            
+            # Формируем обновленное сообщение с информацией
+            food_name = updated_data["food_name"]
+            ingredients = updated_data.get("ingredients", [])
+            total_calories = updated_data["total_calories"]
+            total_protein = updated_data["total_protein"]
+            total_fats = updated_data["total_fats"]
+            total_carbs = updated_data["total_carbs"]
+            
+            result_text = f"✅ Название: {food_name}\n"
+            
+            # Список ингредиентов
+            if ingredients and len(ingredients) > 0:
+                ingredient_names = [ing.get("name", "") for ing in ingredients if ing.get("name")]
+                if ingredient_names:
+                    result_text += f"📌 Ингредиенты: {', '.join(ingredient_names)}\n"
+            
+            # Вес порции
+            total_weight = 0
+            if ingredients:
+                import re
+                for ing in ingredients:
+                    amount_str = ing.get("amount", "")
+                    if amount_str:
+                        weight_match = re.search(r'(\d+)', amount_str.replace(' ', ''))
+                        if weight_match:
+                            total_weight += int(weight_match.group(1))
+            
+            if total_weight > 0:
+                result_text += f"⚖️ Вес порции: {total_weight} грамм\n"
+            
+            # КБЖУ
+            result_text += f"⚡️ Калорийность: {total_calories:.0f} ккал\n"
+            result_text += f"🍖 Белки: {total_protein:.0f} грамм\n"
+            result_text += f"🍕 Жиры: {total_fats:.0f} грамм\n"
+            result_text += f"🍞 Углеводы: {total_carbs:.0f} грамм\n"
+            result_text += f"💡 Общая калорийность: {total_calories:.0f} ккал"
+            
+            # Добавляем кнопки
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="Зафиксировать", callback_data="food_confirm"),
+                    InlineKeyboardButton(text="Исправить", callback_data="food_correct")
+                ],
+                [InlineKeyboardButton(text="Отменить", callback_data="food_cancel")]
+            ])
+            
+            await message.answer(result_text, reply_markup=keyboard)
+            logger.info(
+                f"User {user_id}: Food data updated after correction "
+                f"({total_calories:.0f} kcal), waiting for confirmation"
+            )
+            
+        except Exception as e:
+            await processing_msg.delete()
+            logger.error(f"Error processing food correction for user {user_id}: {e}", exc_info=True)
+            await message.answer(
+                "❌ Не удалось обработать коррекцию. "
+                "Попробуйте еще раз или используйте кнопки для продолжения."
+            )
+    
     except Exception as e:
-        logger.error(f"Error handling food correction for user {user_id}: {e}", exc_info=True)
-        await message.answer("Произошла ошибка. Попробуйте еще раз.")
-        await state.clear()
+        logger.error(f"Error in handle_food_correction for user {user_id}: {e}", exc_info=True)
+        await message.answer("Произошла ошибка при обработке коррекции. Попробуйте еще раз.")
 
 
 @router.message(StateFilter(AddingFoodStates.waiting_for_calories))
