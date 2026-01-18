@@ -368,7 +368,7 @@ async def handle_morning_sleep(callback: CallbackQuery, state: FSMContext):
                 await callback.message.edit_text("Пользователь не найден")
                 return
             
-            from utils.templates import MORNING_SLEEP_OPTIONS
+            from utils.templates import MORNING_SLEEP_OPTIONS, get_morning_sleep_hours_question
             from services.daily_scenarios import save_morning_sleep_quality
             from handlers.fsm_states import MorningCheckinStates
             
@@ -376,13 +376,14 @@ async def handle_morning_sleep(callback: CallbackQuery, state: FSMContext):
             sleep_quality = MORNING_SLEEP_OPTIONS[sleep_index] if sleep_index < len(MORNING_SLEEP_OPTIONS) else MORNING_SLEEP_OPTIONS[0]
             
             await save_morning_sleep_quality(session, db_user.id, sleep_quality)
-            await state.set_state(MorningCheckinStates.waiting_for_energy)
+            await state.set_state(MorningCheckinStates.waiting_for_sleep_hours)
             
+            # Создаем клавиатуру для выбора количества часов сна (1-12)
             keyboard = []
             row = []
-            for i in range(1, 6):  # Шкала 1-5
-                row.append(InlineKeyboardButton(text=str(i), callback_data=f"morning_energy_{i}"))
-                if len(row) == 3:
+            for i in range(1, 13):  # 1-12 часов
+                row.append(InlineKeyboardButton(text=str(i), callback_data=f"morning_sleep_hours_{i}"))
+                if len(row) == 4:  # 4 кнопки в ряд
                     keyboard.append(row)
                     row = []
             if row:
@@ -390,10 +391,10 @@ async def handle_morning_sleep(callback: CallbackQuery, state: FSMContext):
             reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
             
             await callback.message.edit_text(
-                "⚡ Как вы себя чувствуете? Оцените энергию от 1 до 5, где 1 - нет сил, а 5 - много энергии",
+                get_morning_sleep_hours_question(),
                 reply_markup=reply_markup
             )
-            logger.info(f"User {user_id} sleep quality saved: {sleep_quality}, waiting for energy")
+            logger.info(f"User {user_id} sleep quality saved: {sleep_quality}, waiting for sleep hours")
     except Exception as e:
         logger.error(f"Error in handle_morning_sleep for user {user_id}: {e}", exc_info=True)
         await callback.message.edit_text("Произошла ошибка. Попробуйте снова.")
