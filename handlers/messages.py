@@ -13,6 +13,7 @@ from services.retest import save_retest_answer
 from utils.validators import parse_number, validate_scale_value
 from utils.logger import setup_logger
 from config import settings
+from openai import RateLimitError, APITimeoutError
 from handlers.commands import send_question
 from handlers.fsm_states import (
     OnboardingStates, RetestStates, AddingFoodStates,
@@ -145,19 +146,35 @@ async def handle_adding_food(message: Message, state: FSMContext):
         description_text = message.text
         logger.info(f"User {user_id} (@{username}) adding food text: '{description_text[:50]}'")
     elif message.voice:
-        # Голосовое сообщение - расшифровываем
-        processing_msg = await message.answer("🔊 Расшифровываю голосовое сообщение...")
-        try:
-            from services.food_recognition import transcribe_voice_to_text
-            bot_instance = message.bot
-            description_text = await transcribe_voice_to_text(bot_instance, message.voice.file_id)
-            await processing_msg.delete()
-            logger.info(f"User {user_id} voice transcribed: '{description_text[:50]}'")
-        except Exception as e:
-            await processing_msg.delete()
-            logger.error(f"Error transcribing voice for user {user_id}: {e}", exc_info=True)
-            await message.answer("❌ Не удалось расшифровать голосовое сообщение. Попробуйте отправить текстом.")
-            return
+            # Голосовое сообщение - расшифровываем
+            processing_msg = await message.answer("🔊 Расшифровываю голосовое сообщение...")
+            try:
+                from services.food_recognition import transcribe_voice_to_text
+                bot_instance = message.bot
+                description_text = await transcribe_voice_to_text(bot_instance, message.voice.file_id)
+                await processing_msg.delete()
+                logger.info(f"User {user_id} voice transcribed: '{description_text[:50]}'")
+            except RateLimitError as e:
+                await processing_msg.delete()
+                logger.error(f"RateLimitError при расшифровке голоса для user {user_id}: {e}", exc_info=True)
+                await message.answer(
+                    "⏳ Сейчас слишком много запросов к сервису распознавания.\n\n"
+                    "Пожалуйста, подождите немного и попробуйте снова, или отправьте текст."
+                )
+                return
+            except APITimeoutError as e:
+                await processing_msg.delete()
+                logger.error(f"APITimeoutError при расшифровке голоса для user {user_id}: {e}", exc_info=True)
+                await message.answer(
+                    "⏱ Превышено время ожидания ответа от сервиса.\n\n"
+                    "Попробуйте еще раз через несколько секунд, или отправьте текст."
+                )
+                return
+            except Exception as e:
+                await processing_msg.delete()
+                logger.error(f"Error transcribing voice for user {user_id}: {e}", exc_info=True)
+                await message.answer("❌ Не удалось расшифровать голосовое сообщение. Попробуйте отправить текстом.")
+                return
     else:
         logger.warning(f"User {user_id} sent message without text or voice in adding_food state")
         await message.answer("Пожалуйста, отправьте название блюда текстом, голосом или фото еды.")
@@ -247,6 +264,26 @@ async def handle_adding_food(message: Message, state: FSMContext):
                 
                 await message.answer(result_text, reply_markup=keyboard)
                 logger.info(f"User {user_id}: Food description processed via AI ({total_calories:.0f} kcal), waiting for confirmation")
+            except RateLimitError as e:
+                await processing_msg.delete()
+                logger.error(f"RateLimitError при обработке описания для user {user_id}: {e}", exc_info=True)
+                await message.answer(
+                    "⏳ Сейчас слишком много запросов к сервису распознавания.\n\n"
+                    "Пожалуйста, подождите немного и попробуйте снова, или укажите калорийность вручную:\n"
+                    "'Название блюда, калории' (например: 'Овсянка с фруктами, 350')"
+                )
+                await state.update_data(food_name=description_text, photo_file_id=photo_file_id)
+                await state.set_state(AddingFoodStates.waiting_for_calories)
+            except APITimeoutError as e:
+                await processing_msg.delete()
+                logger.error(f"APITimeoutError при обработке описания для user {user_id}: {e}", exc_info=True)
+                await message.answer(
+                    "⏱ Превышено время ожидания ответа от сервиса.\n\n"
+                    "Попробуйте еще раз через несколько секунд, или укажите калорийность вручную:\n"
+                    "'Название блюда, калории' (например: 'Овсянка с фруктами, 350')"
+                )
+                await state.update_data(food_name=description_text, photo_file_id=photo_file_id)
+                await state.set_state(AddingFoodStates.waiting_for_calories)
             except Exception as e:
                 await processing_msg.delete()
                 logger.error(f"Error processing food description via AI for user {user_id}: {e}", exc_info=True)
@@ -383,6 +420,20 @@ async def handle_food_confirmation_text_or_voice(message: Message, state: FSMCon
                 f"({total_calories:.0f} kcal), waiting for confirmation"
             )
             
+        except RateLimitError as e:
+            await processing_msg.delete()
+            logger.error(f"RateLimitError при обработке коррекции для user {user_id}: {e}", exc_info=True)
+            await message.answer(
+                "⏳ Сейчас слишком много запросов к сервису распознавания.\n\n"
+                "Пожалуйста, подождите немного и попробуйте снова, или используйте кнопки для продолжения."
+            )
+        except APITimeoutError as e:
+            await processing_msg.delete()
+            logger.error(f"APITimeoutError при обработке коррекции для user {user_id}: {e}", exc_info=True)
+            await message.answer(
+                "⏱ Превышено время ожидания ответа от сервиса.\n\n"
+                "Попробуйте еще раз через несколько секунд, или используйте кнопки для продолжения."
+            )
         except Exception as e:
             await processing_msg.delete()
             logger.error(f"Error processing food correction for user {user_id}: {e}", exc_info=True)
@@ -421,6 +472,22 @@ async def handle_food_correction(message: Message, state: FSMContext):
                 correction_text = await transcribe_voice_to_text(bot_instance, message.voice.file_id)
                 await processing_msg.delete()
                 logger.info(f"User {user_id} voice transcribed: '{correction_text[:50]}'")
+            except RateLimitError as e:
+                await processing_msg.delete()
+                logger.error(f"RateLimitError при расшифровке голоса для user {user_id}: {e}", exc_info=True)
+                await message.answer(
+                    "⏳ Сейчас слишком много запросов к сервису распознавания.\n\n"
+                    "Пожалуйста, подождите немного и попробуйте снова, или отправьте текст."
+                )
+                return
+            except APITimeoutError as e:
+                await processing_msg.delete()
+                logger.error(f"APITimeoutError при расшифровке голоса для user {user_id}: {e}", exc_info=True)
+                await message.answer(
+                    "⏱ Превышено время ожидания ответа от сервиса.\n\n"
+                    "Попробуйте еще раз через несколько секунд, или отправьте текст."
+                )
+                return
             except Exception as e:
                 await processing_msg.delete()
                 logger.error(f"Error transcribing voice for user {user_id}: {e}", exc_info=True)
@@ -520,6 +587,20 @@ async def handle_food_correction(message: Message, state: FSMContext):
                 f"({total_calories:.0f} kcal), waiting for confirmation"
             )
             
+        except RateLimitError as e:
+            await processing_msg.delete()
+            logger.error(f"RateLimitError при обработке коррекции для user {user_id}: {e}", exc_info=True)
+            await message.answer(
+                "⏳ Сейчас слишком много запросов к сервису распознавания.\n\n"
+                "Пожалуйста, подождите немного и попробуйте снова, или используйте кнопки для продолжения."
+            )
+        except APITimeoutError as e:
+            await processing_msg.delete()
+            logger.error(f"APITimeoutError при обработке коррекции для user {user_id}: {e}", exc_info=True)
+            await message.answer(
+                "⏱ Превышено время ожидания ответа от сервиса.\n\n"
+                "Попробуйте еще раз через несколько секунд, или используйте кнопки для продолжения."
+            )
         except Exception as e:
             await processing_msg.delete()
             logger.error(f"Error processing food correction for user {user_id}: {e}", exc_info=True)
@@ -750,16 +831,59 @@ async def handle_photo(message: Message, state: FSMContext):
                             f"({total_calories:.0f} kcal), waiting for confirmation"
                         )
                 
+                except RateLimitError as e:
+                    await processing_msg.delete()
+                    logger.error(f"RateLimitError при распознавании еды для user {user_id}: {e}", exc_info=True)
+                    await state.update_data(photo_file_id=photo.file_id, photo_not_recognized=True)
+                    await state.set_state(AddingFoodStates.waiting_for_food)
+                    await message.answer(
+                        "⏳ Сейчас слишком много запросов к сервису распознавания.\n\n"
+                        "Пожалуйста, подождите немного и попробуйте снова, или опишите блюдо текстом/голосом.\n\n"
+                        "Например:\n"
+                        "• «Овсянка с бананом, 350 ккал»\n"
+                        "• «Куриная грудка с овощами, 280 ккал»"
+                    )
+                except APITimeoutError as e:
+                    await processing_msg.delete()
+                    logger.error(f"APITimeoutError при распознавании еды для user {user_id}: {e}", exc_info=True)
+                    await state.update_data(photo_file_id=photo.file_id, photo_not_recognized=True)
+                    await state.set_state(AddingFoodStates.waiting_for_food)
+                    await message.answer(
+                        "⏱ Превышено время ожидания ответа от сервиса.\n\n"
+                        "Попробуйте еще раз через несколько секунд, или опишите блюдо текстом/голосом.\n\n"
+                        "Например:\n"
+                        "• «Овсянка с бананом, 350 ккал»\n"
+                        "• «Куриная грудка с овощами, 280 ккал»"
+                    )
                 except Exception as e:
                     await processing_msg.delete()
                     error_msg = str(e)
                     logger.error(f"Error recognizing food for user {user_id}: {e}", exc_info=True)
                     
+                    # Специальная обработка для отсутствия API ключа
+                    if "api ключ не настроен" in error_msg.lower() or "api key" in error_msg.lower():
+                        from main import send_error_to_admins
+                        await send_error_to_admins(
+                            f"КРИТИЧЕСКАЯ ОШИБКА: OpenAI API ключ не настроен",
+                            f"User: {user_id} (@{username})\nError: {error_msg}",
+                            f"OpenAI API key not configured"
+                        )
+                        await state.update_data(photo_file_id=photo.file_id, photo_not_recognized=True)
+                        await state.set_state(AddingFoodStates.waiting_for_food)
+                        await message.answer(
+                            "🔧 Сейчас сервис распознавания временно недоступен.\n\n"
+                            "Пожалуйста, опишите блюдо текстом или голосом:\n\n"
+                            "Например:\n"
+                            "• «Овсянка с бананом, 350 ккал»\n"
+                            "• «Куриная грудка с овощами, 280 ккал»"
+                        )
+                        logger.warning(f"OpenAI API key not configured for user {user_id}, admins notified")
+                        return
+                    
                     # Определяем тип ошибки: техническая или нетехническая
                     is_technical_error = any(keyword in error_msg.lower() for keyword in [
-                        "api key", "openai api ключ", "не настроен", "недоступен",
-                        "connection", "timeout", "network", "proxy", "403", "401",
-                        "rate limit", "quota", "server error", "500", "502", "503"
+                        "недоступен", "connection", "network", "proxy", "403", "401",
+                        "quota", "server error", "500", "502", "503"
                     ])
                     
                     if is_technical_error:
