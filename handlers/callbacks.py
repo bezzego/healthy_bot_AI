@@ -349,7 +349,7 @@ async def handle_retest(callback: CallbackQuery, state: FSMContext):
 
 
 
-@router.callback_query(F.data.startswith("morning_sleep_"))
+@router.callback_query(F.data.startswith("morning_sleep_") & ~F.data.startswith("morning_sleep_hours_"))
 async def handle_morning_sleep(callback: CallbackQuery, state: FSMContext):
     """Обработка выбора качества сна в утреннем чек-ине"""
     await callback.answer()
