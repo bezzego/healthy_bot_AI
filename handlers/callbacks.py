@@ -991,18 +991,26 @@ async def send_evening_summary(session, user_id: int, message):
     summary_text += "\n"
     
     # КБЖУ
+    total_calories = nutrition.get('total_calories', 0) or 0
+    total_protein = nutrition.get('total_protein', 0) or 0
+    total_fats = nutrition.get('total_fats', 0) or 0
+    total_carbs = nutrition.get('total_carbs', 0) or 0
+    
     summary_text += f"🍽️ КБЖУ:\n"
-    summary_text += f"• Калории: {nutrition['total_calories']:.0f} ккал\n"
-    summary_text += f"• Белки: {nutrition['total_protein']:.1f} г\n"
-    summary_text += f"• Жиры: {nutrition['total_fats']:.1f} г\n"
-    summary_text += f"• Углеводы: {nutrition['total_carbs']:.1f} г\n"
+    summary_text += f"• Калории: {total_calories:.0f} ккал\n"
+    summary_text += f"• Белки: {total_protein:.1f} г\n"
+    summary_text += f"• Жиры: {total_fats:.1f} г\n"
+    summary_text += f"• Углеводы: {total_carbs:.1f} г\n"
     summary_text += "\n"
     
     # Еда (список блюд)
-    if nutrition['records']:
+    records = nutrition.get('records', [])
+    if records:
         summary_text += f"🍴 ЕДА ЗА ДЕНЬ:\n"
-        for i, record in enumerate(nutrition['records'], 1):
-            summary_text += f"{i}. {record['food_name']} - {record['calories']:.0f} ккал\n"
+        for i, record in enumerate(records, 1):
+            food_name = record.get('food_name', 'Неизвестное блюдо')
+            calories = record.get('calories', 0) or 0
+            summary_text += f"{i}. {food_name} - {calories:.0f} ккал\n"
         summary_text += "\n"
     else:
         summary_text += f"🍴 ЕДА ЗА ДЕНЬ:\n"
