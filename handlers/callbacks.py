@@ -971,40 +971,48 @@ async def send_evening_summary(session, user_id: int, message):
     active_calories = daily_record.active_calories or 0
     
     # Формируем сводку
-    summary_text = "🌙 ВЕЧЕРНЯЯ СВОДКА ЗА ДЕНЬ\n\n"
+    summary_text = "📊 СТАТИСТИКА ЗА ДЕНЬ\n\n"
     
-    # Шаги
-    summary_text += f"🚶 ШАГИ:\n"
-    summary_text += f"• Сегодня: {today_steps:,} шагов\n"
-    summary_text += f"• Среднее за неделю: {avg_week_steps:.0f} шагов\n"
+    # Активность
+    summary_text += f"🏃 АКТИВНОСТЬ:\n"
+    summary_text += f"• Шаги: {today_steps:,}\n"
+    if avg_week_steps > 0:
+        summary_text += f"• Среднее за неделю: {avg_week_steps:.0f} шагов\n"
     if avg_last_week_steps > 0:
         if steps_diff > 0:
             summary_text += f"• На {steps_diff:.0f} шагов больше, чем на прошлой неделе (+{steps_diff_percent:.0f}%)\n"
         elif steps_diff < 0:
             summary_text += f"• На {abs(steps_diff):.0f} шагов меньше, чем на прошлой неделе ({steps_diff_percent:.0f}%)\n"
-        else:
-            summary_text += f"• Примерно столько же, как на прошлой неделе\n"
+    
+    if active_calories > 0:
+        summary_text += f"• Активные калории: {active_calories:.0f} ккал\n"
+        if daily_record.activity_type:
+            summary_text += f"• Тип активности: {daily_record.activity_type}\n"
     summary_text += "\n"
     
-    # Активные калории
-    if active_calories > 0:
-        summary_text += f"🔥 АКТИВНЫЕ КАЛОРИИ:\n"
-        summary_text += f"• Потрачено: {active_calories:.0f} ккал\n"
-        if daily_record.activity_type:
-            summary_text += f"• Активность: {daily_record.activity_type}\n"
-        summary_text += "\n"
-    
-    # Питание
-    summary_text += f"🍽️ ПИТАНИЕ:\n"
+    # КБЖУ
+    summary_text += f"🍽️ КБЖУ:\n"
     summary_text += f"• Калории: {nutrition['total_calories']:.0f} ккал\n"
     summary_text += f"• Белки: {nutrition['total_protein']:.1f} г\n"
     summary_text += f"• Жиры: {nutrition['total_fats']:.1f} г\n"
     summary_text += f"• Углеводы: {nutrition['total_carbs']:.1f} г\n"
+    summary_text += "\n"
+    
+    # Еда (список блюд)
+    if nutrition['records']:
+        summary_text += f"🍴 ЕДА ЗА ДЕНЬ:\n"
+        for i, record in enumerate(nutrition['records'], 1):
+            summary_text += f"{i}. {record['food_name']} - {record['calories']:.0f} ккал\n"
+        summary_text += "\n"
+    else:
+        summary_text += f"🍴 ЕДА ЗА ДЕНЬ:\n"
+        summary_text += f"• Записей о еде пока нет\n"
+        summary_text += "\n"
     
     # Вода
     water_ml = daily_record.water_intake or 0
     water_liters = water_ml / 1000.0
-    summary_text += f"\n💧 ВОДА: {water_liters:.1f} л ({water_ml:.0f} мл)\n"
+    summary_text += f"💧 ВОДА: {water_liters:.1f} л ({water_ml:.0f} мл)\n"
     
     await message.answer(summary_text)
 
