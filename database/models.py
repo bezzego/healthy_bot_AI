@@ -137,8 +137,13 @@ class DailyRecord(Base):
     # Вечерние показатели
     evening_mood = Column(String, nullable=True)  # Варианты: "Раздражение", "Усталость", "Спокойно", "Хорошее настроение", "Отличное настроение"
     daily_steps = Column(Integer, nullable=True)
-    physical_activity = Column(Boolean, nullable=True)
+    physical_activity = Column(Boolean, nullable=True)  # Старое поле для совместимости
+    activity_type = Column(String, nullable=True)  # Тип активности (например: "Бег", "Йога", "Силовая тренировка")
+    active_calories = Column(Float, default=0)  # Активные калории (потраченные на активность)
     evening_stool = Column(String, nullable=True)  # Варианты: "Да, нормальный", "Да, плотный", "Да, жидкий", "Да, жидкий более 2 раз", "Нет"
+    
+    # Вода
+    water_intake = Column(Float, default=0)  # Потребление воды в мл
     
     # Питание за день
     total_calories = Column(Float, default=0)

@@ -20,6 +20,11 @@ class AddingFoodStates(StatesGroup):
     waiting_for_food_correction = State()
 
 
+class WaterStates(StatesGroup):
+    """Состояния для ввода воды"""
+    waiting_for_water_manual = State()
+
+
 class AdminRequestStates(StatesGroup):
     """Состояния обращения к администратору"""
     waiting_for_message = State()
@@ -48,6 +53,7 @@ class EveningCheckinStates(StatesGroup):
     waiting_for_mood = State()
     waiting_for_steps = State()
     waiting_for_activity = State()
+    waiting_for_activity_duration = State()  # Продолжительность активности в минутах
     waiting_for_stool = State()
 
 
@@ -68,5 +74,6 @@ __all__ = [
     'NotificationSettingsStates',
     'MorningCheckinStates',
     'EveningCheckinStates',
-    'MonthlyMeasurementStates'
+    'MonthlyMeasurementStates',
+    'WaterStates'
 ]

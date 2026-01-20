@@ -17,7 +17,7 @@ from openai import RateLimitError, APITimeoutError
 from handlers.commands import send_question
 from handlers.fsm_states import (
     OnboardingStates, RetestStates, AddingFoodStates,
-    MorningCheckinStates, EveningCheckinStates, MonthlyMeasurementStates
+    MorningCheckinStates, EveningCheckinStates, MonthlyMeasurementStates, WaterStates
 )
 from aiogram.fsm.context import FSMContext
 
@@ -941,15 +941,148 @@ async def handle_evening_steps(message: Message, state: FSMContext):
     await state.update_data(steps=steps)
     await state.set_state(EveningCheckinStates.waiting_for_activity)
     
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Да", callback_data="evening_activity_yes")],
-        [InlineKeyboardButton(text="Нет", callback_data="evening_activity_no")]
-    ])
+    from utils.templates import ACTIVITY_TYPES
     
-    await message.answer("Была ли сегодня дополнительная физическая активность?", reply_markup=keyboard)
-    logger.debug(f"User {message.from_user.id} waiting for activity answer")
+    # Создаем клавиатуру с активностями (по 2 в ряд)
+    keyboard_rows = []
+    for i in range(0, len(ACTIVITY_TYPES), 2):
+        row = []
+        for j in range(2):
+            if i + j < len(ACTIVITY_TYPES):
+                activity_name, _, _ = ACTIVITY_TYPES[i + j]
+                row.append(InlineKeyboardButton(text=activity_name, callback_data=f"evening_activity_{i + j}"))
+        if row:
+            keyboard_rows.append(row)
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
+    
+    await message.answer(
+        "Какая дополнительная физическая активность была сегодня?\n\n"
+        "Выберите тип активности:",
+        reply_markup=keyboard
+    )
+    logger.debug(f"User {message.from_user.id} waiting for activity selection")
 
 
+@router.message(StateFilter(EveningCheckinStates.waiting_for_activity_duration))
+async def handle_evening_activity_duration(message: Message, state: FSMContext):
+    """Обработка ввода продолжительности активности"""
+    user_id = message.from_user.id
+    text = message.text
+    
+    try:
+        from utils.validators import parse_number
+        from utils.activity_calculator import calculate_activity_calories
+        from handlers.fsm_states import EveningCheckinStates
+        from utils.templates import EVENING_STOOL_OPTIONS
+        from database.db import AsyncSessionLocal
+        from database.models import User, Questionnaire
+        from sqlalchemy import select
+        
+        is_valid, value, error = parse_number(text)
+        if not is_valid:
+            await message.answer("Пожалуйста, введите число (количество минут). Например: 30")
+            return
+        
+        duration_minutes = int(value)
+        if duration_minutes < 1 or duration_minutes > 600:  # Максимум 10 часов
+            await message.answer("Продолжительность должна быть от 1 до 600 минут. Попробуйте еще раз.")
+            return
+        
+        state_data = await state.get_data()
+        activity_type = state_data.get("activity_type", "Другое")
+        
+        # Получаем вес пользователя для расчета калорий
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(
+                select(User).where(User.telegram_id == user_id)
+            )
+            db_user = result.scalar_one_or_none()
+            
+            if db_user:
+                # Пытаемся получить вес из последней анкеты
+                questionnaire_result = await session.execute(
+                    select(Questionnaire).where(Questionnaire.user_id == db_user.id)
+                    .order_by(Questionnaire.created_at.desc())
+                )
+                questionnaire = questionnaire_result.scalar_one_or_none()
+                weight_kg = questionnaire.weight if questionnaire else None
+                
+                # Рассчитываем калории
+                active_calories = calculate_activity_calories(activity_type, duration_minutes, weight_kg)
+                
+                await state.update_data(activity_duration=duration_minutes, active_calories=active_calories)
+                await state.set_state(EveningCheckinStates.waiting_for_stool)
+                
+                keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text=stool, callback_data=f"evening_stool_{i}")]
+                    for i, stool in enumerate(EVENING_STOOL_OPTIONS)
+                ])
+                
+                await message.answer(
+                    f"✅ Активность зафиксирована:\n"
+                    f"• {activity_type}\n"
+                    f"• Продолжительность: {duration_minutes} минут\n"
+                    f"• Потрачено калорий: {active_calories:.0f} ккал\n\n"
+                    f"Был ли сегодня стул?",
+                    reply_markup=keyboard
+                )
+                logger.info(f"User {user_id} activity: {activity_type}, {duration_minutes} min, {active_calories} kcal")
+            else:
+                await message.answer("Пользователь не найден")
+    except Exception as e:
+        logger.error(f"Error handling activity duration for user {user_id}: {e}", exc_info=True)
+        await message.answer("Произошла ошибка. Попробуйте еще раз.")
+
+
+@router.message(F.text == "💧 Вода")
+async def handle_water_button(message: Message):
+    """Обработка кнопки 'Вода'"""
+    user_id = message.from_user.id
+    logger.info(f"User {user_id} clicked Water button")
+    
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(User).where(User.telegram_id == user_id)
+        )
+        db_user = result.scalar_one_or_none()
+        
+        if not db_user:
+            await message.answer("Пользователь не найден")
+            return
+        
+        from services.daily_scenarios import get_or_create_daily_record
+        from datetime import date
+        daily_record = await get_or_create_daily_record(session, db_user.id, date.today())
+        
+        from utils.templates import WATER_VOLUMES
+        from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+        
+        # Создаем клавиатуру с объемами воды
+        keyboard_rows = []
+        for i in range(0, len(WATER_VOLUMES), 2):
+            row = []
+            for j in range(2):
+                if i + j < len(WATER_VOLUMES):
+                    volume_name, _ = WATER_VOLUMES[i + j]
+                    row.append(InlineKeyboardButton(text=volume_name, callback_data=f"water_add_{i + j}"))
+            if row:
+                keyboard_rows.append(row)
+        
+        # Добавляем кнопку "Ввести вручную"
+        keyboard_rows.append([InlineKeyboardButton(text="✏️ Ввести вручную", callback_data="water_manual")])
+        
+        keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
+        
+        water_ml = daily_record.water_intake or 0
+        water_liters = water_ml / 1000.0
+        
+        await message.answer(
+            f"💧 ВОДА ЗА СЕГОДНЯ\n\n"
+            f"Выпито: {water_liters:.1f} л ({water_ml:.0f} мл)\n\n"
+            f"Выберите объем для добавления:",
+            reply_markup=keyboard
+        )
 
 
 @router.message(StateFilter(MonthlyMeasurementStates.waiting_for_weight))
@@ -977,6 +1110,57 @@ async def handle_monthly_weight(message: Message, state: FSMContext):
         
     except Exception as e:
         logger.error(f"Error handling monthly weight for user {user_id}: {e}", exc_info=True)
+        await message.answer("Произошла ошибка. Попробуйте еще раз.")
+
+
+@router.message(StateFilter(WaterStates.waiting_for_water_manual))
+async def handle_water_manual_input(message: Message, state: FSMContext):
+    """Обработка ввода воды вручную"""
+    user_id = message.from_user.id
+    text = message.text
+    
+    try:
+        from utils.validators import parse_number
+        from services.daily_scenarios import get_or_create_daily_record
+        from database.db import AsyncSessionLocal
+        from database.models import User
+        from sqlalchemy import select
+        from datetime import date
+        
+        is_valid, value, error = parse_number(text)
+        if not is_valid:
+            await message.answer("Пожалуйста, введите число (количество миллилитров). Например: 250")
+            return
+        
+        volume_ml = float(value)
+        if volume_ml < 1 or volume_ml > 10000:  # Максимум 10 литров
+            await message.answer("Количество воды должно быть от 1 до 10000 мл. Попробуйте еще раз.")
+            return
+        
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(
+                select(User).where(User.telegram_id == user_id)
+            )
+            db_user = result.scalar_one_or_none()
+            
+            if db_user:
+                daily_record = await get_or_create_daily_record(session, db_user.id, date.today())
+                daily_record.water_intake = (daily_record.water_intake or 0) + volume_ml
+                await session.commit()
+                
+                total_water_ml = daily_record.water_intake
+                total_water_liters = total_water_ml / 1000.0
+                
+                await message.answer(
+                    f"✅ Добавлено {volume_ml:.0f} мл воды\n\n"
+                    f"💧 Всего за сегодня: {total_water_liters:.1f} л ({total_water_ml:.0f} мл)"
+                )
+                await state.clear()
+                logger.info(f"User {user_id} added {volume_ml} ml water manually, total: {total_water_ml} ml")
+            else:
+                await message.answer("Пользователь не найден")
+    except Exception as e:
+        logger.error(f"Error adding water manually for user {user_id}: {e}", exc_info=True)
         await message.answer("Произошла ошибка. Попробуйте еще раз.")
 
 

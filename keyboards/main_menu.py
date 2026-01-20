@@ -15,9 +15,10 @@ def get_main_menu_keyboard(user_id: int) -> ReplyKeyboardMarkup:
         ],
         [
             KeyboardButton(text="📸 Добавить еду"),
-            KeyboardButton(text="🔄 Повторное тестирование"),
+            KeyboardButton(text="💧 Вода"),
         ],
         [
+            KeyboardButton(text="🔄 Повторное тестирование"),
             KeyboardButton(text="👨‍💼 Связаться с админом"),
         ],
     ]

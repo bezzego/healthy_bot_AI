@@ -14,7 +14,7 @@ from utils.templates import format_statistics
 from utils.logger import setup_logger
 from config import settings
 from handlers.commands import send_question
-from handlers.fsm_states import OnboardingStates, RetestStates, AddingFoodStates
+from handlers.fsm_states import OnboardingStates, RetestStates, AddingFoodStates, WaterStates
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 import json
@@ -594,29 +594,47 @@ async def handle_evening_mood(callback: CallbackQuery, state: FSMContext):
         await callback.message.edit_text("Произошла ошибка. Попробуйте снова.")
 
 
-@router.callback_query(F.data.startswith("evening_activity_"))
+@router.callback_query(F.data.startswith("evening_activity_") & ~F.data.startswith("evening_activity_duration_"))
 async def handle_evening_activity_callback(callback: CallbackQuery, state: FSMContext):
-    """Обработка ответа об активности в вечернем чек-ине"""
+    """Обработка выбора типа активности в вечернем чек-ине"""
     await callback.answer()
     
     logger.debug(f"User {callback.from_user.id} selected activity: {callback.data}")
     
     try:
         from handlers.fsm_states import EveningCheckinStates
-        from utils.templates import EVENING_STOOL_OPTIONS
+        from utils.templates import ACTIVITY_TYPES
         
-        activity = callback.data.endswith("_yes")
-        await state.update_data(activity=activity)
-        await state.set_state(EveningCheckinStates.waiting_for_stool)
+        # Проверяем, выбрана ли активность "Нет активности"
+        if callback.data == "evening_activity_0":
+            # Нет активности - сразу переходим к стулу
+            await state.update_data(activity_type="Нет активности", activity_duration=0, active_calories=0)
+            await state.set_state(EveningCheckinStates.waiting_for_stool)
+            
+            from utils.templates import EVENING_STOOL_OPTIONS
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text=stool, callback_data=f"evening_stool_{i}")]
+                for i, stool in enumerate(EVENING_STOOL_OPTIONS)
+            ])
+            
+            await callback.message.edit_text("Был ли сегодня стул?", reply_markup=keyboard)
+            return
         
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text=stool, callback_data=f"evening_stool_{i}")]
-            for i, stool in enumerate(EVENING_STOOL_OPTIONS)
-        ])
-        
-        logger.debug(f"User {callback.from_user.id} activity: {activity}, waiting for stool")
-        
-        await callback.message.edit_text("Был ли сегодня стул?", reply_markup=keyboard)
+        # Получаем индекс активности
+        activity_index = int(callback.data.split("_")[-1])
+        if activity_index < len(ACTIVITY_TYPES):
+            activity_name, _, activity_desc = ACTIVITY_TYPES[activity_index]
+            await state.update_data(activity_type=activity_name)
+            await state.set_state(EveningCheckinStates.waiting_for_activity_duration)
+            
+            await callback.message.edit_text(
+                f"Выбрана активность: {activity_name}\n"
+                f"{activity_desc}\n\n"
+                "Сколько минут вы занимались? Введите число:"
+            )
+            logger.debug(f"User {callback.from_user.id} selected activity: {activity_name}, waiting for duration")
+        else:
+            await callback.message.edit_text("Ошибка: активность не найдена. Попробуйте снова.")
     except Exception as e:
         logger.error(f"Error in handle_evening_activity_callback for user {callback.from_user.id}: {e}", exc_info=True)
         await callback.message.edit_text("Произошла ошибка. Попробуйте снова.")
@@ -642,7 +660,9 @@ async def handle_evening_stool_callback(callback: CallbackQuery, state: FSMConte
     state_data = await state.get_data()
     mood = state_data.get("evening_mood")
     steps = state_data.get("steps", 0)
-    activity = state_data.get("activity", False)
+    activity_type = state_data.get("activity_type")
+    activity_duration = state_data.get("activity_duration", 0)
+    active_calories = state_data.get("active_calories", 0)
     
     user_id = callback.from_user.id
     
@@ -654,18 +674,31 @@ async def handle_evening_stool_callback(callback: CallbackQuery, state: FSMConte
             db_user = result.scalar_one_or_none()
             
             if db_user:
-                report_result = await save_evening_report(
-                    session, db_user.id,
-                    mood=mood,
-                    steps=steps,
-                    physical_activity=activity,
-                    stool=stool
-                )
-                await state.clear()
+                # Сохраняем вечерний отчет с новыми полями
+                from services.daily_scenarios import get_or_create_daily_record
+                from datetime import date
+                daily_record = await get_or_create_daily_record(session, db_user.id, date.today())
                 
-                wish = random.choice(EVENING_WISHES)
-                await callback.message.edit_text(f"Ответы записаны! {wish}")
-                logger.info(f"Evening report completed for user {user_id}: mood={mood}, steps={steps}, activity={activity}, stool={stool}")
+                daily_record.evening_mood = mood
+                daily_record.daily_steps = steps
+                daily_record.evening_stool = stool
+                
+                # Новые поля для активности
+                if activity_type:
+                    daily_record.activity_type = activity_type
+                    daily_record.active_calories = active_calories
+                    daily_record.physical_activity = (activity_type != "Нет активности")
+                else:
+                    daily_record.physical_activity = False
+                    daily_record.active_calories = 0
+                
+                await session.commit()
+                
+                # Формируем и отправляем вечернюю сводку
+                await send_evening_summary(session, db_user.id, callback.message)
+                
+                await state.clear()
+                logger.info(f"Evening report completed for user {user_id}: mood={mood}, steps={steps}, activity={activity_type}, active_calories={active_calories}, stool={stool}")
             else:
                 logger.warning(f"User {user_id} not found when completing evening report")
                 await callback.message.edit_text("Ошибка: пользователь не найден")
@@ -884,3 +917,154 @@ async def send_question_message(callback: CallbackQuery, question: dict, state: 
     
     reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard) if keyboard else None
     await safe_edit_message(callback, text, reply_markup)
+
+
+async def send_evening_summary(session, user_id: int, message):
+    """Отправить вечернюю сводку пользователю"""
+    from services.daily_scenarios import get_or_create_daily_record
+    from services.nutrition import get_today_nutrition
+    from database.models import DailyRecord
+    from sqlalchemy import select, func
+    from datetime import date, timedelta
+    
+    today = date.today()
+    daily_record = await get_or_create_daily_record(session, user_id, today)
+    
+    # Получаем питание за сегодня
+    nutrition = await get_today_nutrition(session, user_id)
+    
+    # Получаем шаги за сегодня
+    today_steps = daily_record.daily_steps or 0
+    
+    # Получаем средние шаги за неделю
+    week_start = today - timedelta(days=6)
+    week_records_result = await session.execute(
+        select(DailyRecord).where(
+            DailyRecord.user_id == user_id,
+            func.date(DailyRecord.date) >= week_start,
+            func.date(DailyRecord.date) <= today
+        )
+    )
+    week_records = list(week_records_result.scalars().all())
+    week_steps = [r.daily_steps for r in week_records if r.daily_steps]
+    avg_week_steps = sum(week_steps) / len(week_steps) if week_steps else 0
+    
+    # Получаем средние шаги за прошлую неделю
+    last_week_start = week_start - timedelta(days=7)
+    last_week_end = week_start - timedelta(days=1)
+    last_week_records_result = await session.execute(
+        select(DailyRecord).where(
+            DailyRecord.user_id == user_id,
+            func.date(DailyRecord.date) >= last_week_start,
+            func.date(DailyRecord.date) <= last_week_end
+        )
+    )
+    last_week_records = list(last_week_records_result.scalars().all())
+    last_week_steps = [r.daily_steps for r in last_week_records if r.daily_steps]
+    avg_last_week_steps = sum(last_week_steps) / len(last_week_steps) if last_week_steps else 0
+    
+    # Сравнение шагов
+    steps_diff = today_steps - avg_last_week_steps if avg_last_week_steps > 0 else 0
+    steps_diff_percent = (steps_diff / avg_last_week_steps * 100) if avg_last_week_steps > 0 else 0
+    
+    # Активные калории
+    active_calories = daily_record.active_calories or 0
+    
+    # Формируем сводку
+    summary_text = "🌙 ВЕЧЕРНЯЯ СВОДКА ЗА ДЕНЬ\n\n"
+    
+    # Шаги
+    summary_text += f"🚶 ШАГИ:\n"
+    summary_text += f"• Сегодня: {today_steps:,} шагов\n"
+    summary_text += f"• Среднее за неделю: {avg_week_steps:.0f} шагов\n"
+    if avg_last_week_steps > 0:
+        if steps_diff > 0:
+            summary_text += f"• На {steps_diff:.0f} шагов больше, чем на прошлой неделе (+{steps_diff_percent:.0f}%)\n"
+        elif steps_diff < 0:
+            summary_text += f"• На {abs(steps_diff):.0f} шагов меньше, чем на прошлой неделе ({steps_diff_percent:.0f}%)\n"
+        else:
+            summary_text += f"• Примерно столько же, как на прошлой неделе\n"
+    summary_text += "\n"
+    
+    # Активные калории
+    if active_calories > 0:
+        summary_text += f"🔥 АКТИВНЫЕ КАЛОРИИ:\n"
+        summary_text += f"• Потрачено: {active_calories:.0f} ккал\n"
+        if daily_record.activity_type:
+            summary_text += f"• Активность: {daily_record.activity_type}\n"
+        summary_text += "\n"
+    
+    # Питание
+    summary_text += f"🍽️ ПИТАНИЕ:\n"
+    summary_text += f"• Калории: {nutrition['total_calories']:.0f} ккал\n"
+    summary_text += f"• Белки: {nutrition['total_protein']:.1f} г\n"
+    summary_text += f"• Жиры: {nutrition['total_fats']:.1f} г\n"
+    summary_text += f"• Углеводы: {nutrition['total_carbs']:.1f} г\n"
+    
+    # Вода
+    water_ml = daily_record.water_intake or 0
+    water_liters = water_ml / 1000.0
+    summary_text += f"\n💧 ВОДА: {water_liters:.1f} л ({water_ml:.0f} мл)\n"
+    
+    await message.answer(summary_text)
+
+
+@router.callback_query(F.data.startswith("water_add_"))
+async def handle_water_add(callback: CallbackQuery):
+    """Обработка добавления воды по кнопке"""
+    await callback.answer()
+    
+    user_id = callback.from_user.id
+    logger.info(f"User {user_id} adding water: {callback.data}")
+    
+    try:
+        from utils.templates import WATER_VOLUMES
+        from services.daily_scenarios import get_or_create_daily_record
+        from database.db import AsyncSessionLocal
+        from database.models import User
+        from sqlalchemy import select
+        from datetime import date
+        
+        volume_index = int(callback.data.split("_")[-1])
+        if volume_index < len(WATER_VOLUMES):
+            _, volume_ml = WATER_VOLUMES[volume_index]
+            
+            async with AsyncSessionLocal() as session:
+                result = await session.execute(
+                    select(User).where(User.telegram_id == user_id)
+                )
+                db_user = result.scalar_one_or_none()
+                
+                if db_user:
+                    daily_record = await get_or_create_daily_record(session, db_user.id, date.today())
+                    daily_record.water_intake = (daily_record.water_intake or 0) + volume_ml
+                    await session.commit()
+                    
+                    total_water_ml = daily_record.water_intake
+                    total_water_liters = total_water_ml / 1000.0
+                    
+                    await callback.message.edit_text(
+                        f"✅ Добавлено {volume_ml} мл воды\n\n"
+                        f"💧 Всего за сегодня: {total_water_liters:.1f} л ({total_water_ml:.0f} мл)"
+                    )
+                    logger.info(f"User {user_id} added {volume_ml} ml water, total: {total_water_ml} ml")
+                else:
+                    await callback.message.edit_text("Пользователь не найден")
+        else:
+            await callback.message.edit_text("Ошибка: объем не найден")
+    except Exception as e:
+        logger.error(f"Error adding water for user {user_id}: {e}", exc_info=True)
+        await callback.message.edit_text("Произошла ошибка. Попробуйте снова.")
+
+
+@router.callback_query(F.data == "water_manual")
+async def handle_water_manual(callback: CallbackQuery, state: FSMContext):
+    """Обработка запроса на ввод воды вручную"""
+    await callback.answer()
+    
+    await state.set_state(WaterStates.waiting_for_water_manual)
+    await callback.message.edit_text(
+        "💧 ВВОД ВОДЫ ВРУЧНУЮ\n\n"
+        "Введите количество воды в миллилитрах (мл).\n"
+        "Например: 250, 500, 750, 1000"
+    )

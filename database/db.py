@@ -41,17 +41,37 @@ async def init_db():
         await conn.run_sync(Base.metadata.create_all)
         
         # Применяем миграции для существующих таблиц
-        # Проверяем наличие колонки morning_sleep_hours в таблице daily_records
         def check_and_migrate(connection):
             inspector = inspect(connection)
             if 'daily_records' in inspector.get_table_names():
                 columns = [col['name'] for col in inspector.get_columns('daily_records')]
+                
+                # Миграция для morning_sleep_hours
                 if 'morning_sleep_hours' not in columns:
                     try:
                         connection.execute(text("ALTER TABLE daily_records ADD COLUMN morning_sleep_hours INTEGER"))
-                        # commit не нужен - транзакция управляется контекстным менеджером engine.begin()
                     except Exception:
-                        # Если ошибка (например, колонка уже существует) - игнорируем
+                        pass
+                
+                # Миграция для activity_type
+                if 'activity_type' not in columns:
+                    try:
+                        connection.execute(text("ALTER TABLE daily_records ADD COLUMN activity_type VARCHAR"))
+                    except Exception:
+                        pass
+                
+                # Миграция для active_calories
+                if 'active_calories' not in columns:
+                    try:
+                        connection.execute(text("ALTER TABLE daily_records ADD COLUMN active_calories FLOAT DEFAULT 0"))
+                    except Exception:
+                        pass
+                
+                # Миграция для water_intake
+                if 'water_intake' not in columns:
+                    try:
+                        connection.execute(text("ALTER TABLE daily_records ADD COLUMN water_intake FLOAT DEFAULT 0"))
+                    except Exception:
                         pass
         
         await conn.run_sync(check_and_migrate)
