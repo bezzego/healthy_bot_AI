@@ -143,9 +143,16 @@ async def recognize_food_from_image(image_bytes: bytes) -> Dict[str, any]:
     # Кодируем изображение в base64
     base64_image = encode_image_to_base64(compressed_bytes)
     
-    # Минимальный prompt, возвращающий только JSON
-    prompt = """Определи КБЖУ блюда. Ответ только JSON:
-{"food_name":"название","ingredients":[{"name":"ингредиент","calories":число,"protein":число,"fats":число,"carbs":число}],"total_calories":число,"total_protein":число,"total_fats":число,"total_carbs":число}"""
+    # Промпт с обязательной грамовкой и КБЖУ по порции
+    prompt = """По фото определи блюдо и рассчитай КБЖУ на одну порцию.
+
+Обязательно:
+1) Оцени размер порции на фото (в граммах или мл для жидкостей). Укажи грамовку для каждого ингредиента в поле "amount" (например: "80 г", "120 мл", "1 шт ~50 г").
+2) КБЖУ считай именно на эту порцию, а не на 100 г.
+3) Если на фото несколько порций/предметов — укажи КБЖУ на одну порцию и в amount напиши "1 порция ~N г".
+
+Ответ только валидный JSON, без комментариев и markdown:
+{"food_name":"название блюда","ingredients":[{"name":"ингредиент","amount":"грамовка, напр. 100 г","calories":число,"protein":число,"fats":число,"carbs":число}],"total_calories":число,"total_protein":число,"total_fats":число,"total_carbs":число}"""
     
     try:
         # Вызываем GPT-4 Vision API через единый клиент
@@ -168,7 +175,7 @@ async def recognize_food_from_image(image_bytes: bytes) -> Dict[str, any]:
                     ]
                 }
             ],
-            max_tokens=300,
+            max_tokens=450,
             temperature=0.2
         )
         
@@ -464,8 +471,12 @@ async def process_food_correction(
     current_fats = current_food_data.get("total_fats", 0)
     current_carbs = current_food_data.get("total_carbs", 0)
     
-    prompt = f"""Обнови КБЖУ. Текущее: {current_name}, {current_calories:.0f} ккал, Б:{current_protein:.0f}г, Ж:{current_fats:.0f}г, У:{current_carbs:.0f}г. Коррекция: "{correction_text}". Ответ только JSON:
-{{"food_name":"название","ingredients":[{{"name":"ингредиент","calories":число,"protein":число,"fats":число,"carbs":число}}],"total_calories":число,"total_protein":число,"total_fats":число,"total_carbs":число}}"""
+    prompt = f"""Пользователь вносит правку к блюду. Текущее: {current_name}, {current_calories:.0f} ккал, Б:{current_protein:.0f}г, Ж:{current_fats:.0f}г, У:{current_carbs:.0f}г. Коррекция пользователя: "{correction_text}"
+
+Учти правки: если указана грамовка (г, мл, шт) — пересчитай КБЖУ под новый вес; если меняют ингредиент — замени и пересчитай. Для каждого ингредиента обязательно укажи "amount" (например: "100 г", "50 мл").
+
+Ответ только валидный JSON:
+{{"food_name":"название","ingredients":[{{"name":"ингредиент","amount":"грамовка","calories":число,"protein":число,"fats":число,"carbs":число}}],"total_calories":число,"total_protein":число,"total_fats":число,"total_carbs":число}}"""
     
     try:
         # Вызываем GPT API через единый клиент
@@ -477,7 +488,7 @@ async def process_food_correction(
                     "content": prompt
                 }
             ],
-            max_tokens=300,
+            max_tokens=400,
             temperature=0.2
         )
         
@@ -535,9 +546,17 @@ async def process_food_description_from_text(description_text: str) -> Dict[str,
     if not client.client:
         raise Exception("OpenAI API ключ не настроен")
     
-    # Минимальный prompt для текстового описания
-    prompt = f"""Определи КБЖУ по описанию: "{description_text}". Ответ только JSON:
-{{"food_name":"название","ingredients":[{{"name":"ингредиент","calories":число,"protein":число,"fats":число,"carbs":число}}],"total_calories":число,"total_protein":число,"total_fats":число,"total_carbs":число}}"""
+    # Промпт для текста/голоса: грамовка обязательна, при отсутствии — типичная порция
+    prompt = f"""По описанию блюда определи КБЖУ на одну порцию. Описание: "{description_text}"
+
+Правила:
+1) Если в описании указана грамовка (г, мл, шт) — используй её и считай КБЖУ на этот объём.
+2) Если грамовка не указана — укажи типичную порцию в граммах (например: овсянка 200 г, яйцо 1 шт ~50 г, салат 150 г) и считай КБЖУ на неё.
+3) У каждого ингредиента в ответе должно быть поле "amount" с грамовкой (например: "200 г", "1 шт", "50 мл").
+4) total_calories/protein/fats/carbs — итог на одну порцию блюда.
+
+Ответ только валидный JSON:
+{{"food_name":"название","ingredients":[{{"name":"ингредиент","amount":"грамовка","calories":число,"protein":число,"fats":число,"carbs":число}}],"total_calories":число,"total_protein":число,"total_fats":число,"total_carbs":число}}"""
     
     try:
         # Вызываем GPT API через единый клиент
@@ -549,7 +568,7 @@ async def process_food_description_from_text(description_text: str) -> Dict[str,
                     "content": prompt
                 }
             ],
-            max_tokens=300,
+            max_tokens=400,
             temperature=0.2
         )
         
